@@ -14,12 +14,20 @@ report bugs, confusing UI, and missing docs — thank you!
  WHAT'S NEW IN THIS BETA (vs stock 1.52.1)
 ---------------------------------------------------------------------
 
+  * CRITICAL: tooling-nodes load fix (tooling-nodes-api.py) — without
+    this patch ComfyUI often freezes during model scans on Windows /
+    slow disks, so Krita hangs or never receives results. Apply it
+    before testing other features (see STEP 2).
   * Krea 2 image model support (T2I, inpaint, LoRAs, up to 4 refs)
   * Describe workspace — Florence-2 captions + Clio style library
     and Qwen-VL "Enhance Description" (image-grounded rewrite)
   * Augment workspace — up to 10 rectangular region edits
+  * Comic workspace — multi-panel layouts, characters/scenes, draft /
+    refine / lock / assemble page (locked panels can feed Wan Animate)
+  * SVG / CNC / Laser workspace — silhouette, line art, or limited-
+    color images; Export SVG or Add Vector Layer in Krita
   * Animate (Wan) workspace — Wan 2.2 T2V / I2V / FLF2V, Extend, Stitch,
-    progress bar, up to 3 Video LoRAs
+    progress hints, sampler presets, up to 3 Video LoRAs
   * SeedVR Enhance workspace — SeedVR2 diffusion upscale (separate
     from the existing ESRGAN Upscale tab)
   * "Krea 2 Turbo - ER SDE" sampler preset
@@ -79,10 +87,28 @@ settings at your existing ComfyUI.
 Everything below uses paths inside that ComfyUI folder.
 
 ---------------------------------------------------------------------
- STEP 2 — CUSTOM NODES
+ STEP 2 — CRITICAL LOAD FIX, THEN CUSTOM NODES
 ---------------------------------------------------------------------
 
-In a terminal:
+*** DO THIS FIRST (before heavy testing) ***
+
+  Stock "comfyui-tooling-nodes" (installed with the plugin) can freeze
+  the server for minutes while it scans model files — especially on
+  Windows / HDD / large model folders. Krita then appears hung or
+  "never finishes," and finished images are lost. Most new users hit
+  this before they ever try Comic, Wan, or SeedVR.
+
+  After the managed server (or your ComfyUI) has created
+  custom_nodes\comfyui-tooling-nodes\, overwrite api.py with the file
+  from this package:
+
+    copy tooling-nodes-api.py
+      →  <ComfyUI>\custom_nodes\comfyui-tooling-nodes\api.py
+
+  Restart the ComfyUI server. Re-apply this patch whenever you update
+  the tooling-nodes pack.
+
+Then, in a terminal:
 
   cd <your-ComfyUI>\custom_nodes
 
@@ -95,7 +121,7 @@ Optional but recommended:
 
   git clone https://github.com/capitan01R/ComfyUI-Krea2T-Enhancer.git
   git clone https://github.com/1038lab/ComfyUI-QwenVL.git
-      (Enhance Description + Clio styles in Describe)
+      (Describe Enhance + Clio styles; also helps Comic Finalize)
 
 For Animate (Wan):
 
@@ -110,15 +136,8 @@ For SeedVR Enhance:
   ensure PYTHONUTF8=1 (this beta sets it for managed servers) and/or
   pin transformers to 4.x:  pip install "transformers>=4.46,<5"
 
-TOOLING-NODES PATCH (strongly recommended):
-
-  The stock comfyui-tooling-nodes pack can freeze for minutes while
-  scanning models on slow disks. Overwrite with the included patch:
-
-    copy tooling-nodes-api.py
-      →  custom_nodes\comfyui-tooling-nodes\api.py
-
-  Re-apply after updating tooling-nodes.
+Comic and SVG / CNC use your normal Generate style (Krea 2 recommended).
+No extra custom nodes required for those two workspaces.
 
 Restart ComfyUI / Krita after installing nodes.
 
@@ -215,11 +234,29 @@ Augment
   Select regions with Krita’s rectangular selection → Add region
   Per-region prompts + optional scene prompt → Generate
 
+Comic
+  Workspace dropdown → Comic. Pick a page layout (grid / strip / splash…).
+  Fill Characters and Scenes (optional plates), then edit each panel’s
+  beat (location / camera / action / cast).
+  Draft Page or Generate Page → Lock keepers you like → Generate Remaining
+  for unlocked panels → Assemble Page when everything needed is locked.
+  Optional Finalize uses ComfyUI-QwenVL to polish beats into prompts.
+  Locked panel thumbs can be used as Wan Animate start/end (comic pickers).
+
+SVG / CNC / Laser
+  Workspace → SVG / CNC / Laser. Choose Silhouette, Line art, or
+  Limited color; describe what to draw; Generate with your Krea (or other)
+  style. Post-process toggles: contrast / posterize / threshold.
+  Select a history result → Export SVG (file next to the .kra, or home)
+  or Add Vector Layer (inserts a vector layer in the open document).
+  Tracing uses bundled potrace / vtracer helpers when available.
+
 Animate (Wan)
   T2V = prompt only (needs wan2.2_t2v_*). I2V from current layer, or FLF2V first/last.
   Extend = continue from last frame; Stitch = FLF2V toward End frame
   Results land in the .kra Timeline (not an MP4). Export via
   File → Render Animation when you need a video file.
+  Use sampling presets (euler for T2V+lightx2v; lcm for distilled I2V).
   Up to 3 Video LoRAs in the panel
 
 SeedVR Enhance
@@ -241,10 +278,15 @@ Please send:
 
 Known rough edges to watch:
 
-  * First Krea / Wan / SeedVR run can look “stuck” while weights load
+  * If the server “does nothing” for minutes on first connect: you
+    probably skipped the tooling-nodes patch (STEP 2)
+  * First Krea / Wan / SeedVR run can look stuck while weights load
   * Stitch ≠ Extend (different behaviors)
   * SeedVR is image enhance only in this beta (not video batch)
-  * Clio Enhance needs ComfyUI-QwenVL; captions still work with Florence-2 alone
+  * Clio Enhance / Comic Finalize need ComfyUI-QwenVL; captions and
+    comic still work without it
+  * SVG export needs a generated result selected; empty SVG usually
+    means the local tracer helpers were not found
 
 ---------------------------------------------------------------------
  TROUBLESHOOTING
@@ -254,10 +296,13 @@ Known rough edges to watch:
     and ai_diffusion.desktop is next to it; enable in Plugin Manager
   * "Could not find websockets": you installed source without vendored
     deps — use this zip, not a raw git checkout
-  * Hang / lost results: apply tooling-nodes patch (step 2)
+  * Hang / lost results / endless loading: apply tooling-nodes patch
+    (STEP 2) and restart the server — do this before anything else
   * No caption model: Florence-2 folder under models\LLM + restart
   * QwenVL / SeedVR / Wan nodes missing: clone packs, restart server
   * SeedVR UnicodeEncodeError on Windows: UTF-8 env + avoid emoji
     prints; pin transformers < 5 if diffusers breaks
+  * Comic Assemble disabled: lock panels that have pixels first
+  * SVG buttons do nothing: generate and select a result in history
 
 Have fun — and thank you for testing.

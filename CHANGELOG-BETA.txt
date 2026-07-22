@@ -1,13 +1,14 @@
 ComfyforKrita / Krita AI Diffusion — Beta Changelog
 ====================================================
 
-1.52.1-beta.3  (2026-07-21)
+1.52.1-beta.3  (2026-07-22)
 ---------------------------
-Packaging & docs
-  * New beta install guide (INSTALL-BETA.txt) and this changelog
-  * Reproducible zip builder: scripts\build-beta-package.ps1
-  * INSTALL-BETA + README_WAN22: direct Hugging Face resolve links for
-    Krea 2, Florence-2, Wan T2V/I2V, TE/VAE, and T2V lightx2v LoRAs
+Docs / packaging
+  * INSTALL-BETA + README: Comic, SVG/CNC/Laser, and CRITICAL tooling-nodes
+    load fix called out first (freeze/hang on model scan without the patch)
+  * Direct Hugging Face resolve links for Krea 2, Florence-2, Wan T2V/I2V,
+    TE/VAE, and T2V lightx2v LoRAs
+  * scripts\build-beta-package.ps1 and scripts\sync-to-fork.ps1
 
 SeedVR Enhance
   * New workspace (separate from ESRGAN Upscale)
@@ -15,17 +16,25 @@ SeedVR Enhance
   * Managed ComfyUI starts with UTF-8 env to avoid Windows console crashes
 
 Animate (Wan)
-  * I2V and FLF2V modes, Extend from last, Stitch to End
-  * Progress reporting; up to 3 Video LoRAs (high+low UNET)
+  * T2V / I2V / FLF2V, Extend from last, Stitch to End
+  * Sampler / scheduler / sampling presets (euler for T2V+lightx2v)
+  * Progress / next-step status hints; up to 3 Video LoRAs
+
+Comic
+  * Multi-panel page layouts, characters/scenes, draft/refine/lock/assemble
+  * Optional Qwen-VL Finalize; locked panels usable as Wan start/end
+
+SVG / CNC / Laser
+  * Silhouette / line art / limited-color generation
+  * Export SVG or Add Vector Layer (potrace / vtracer when available)
 
 Describe
   * Florence-2 captions; Clio style library; Enhance Description (Qwen-VL)
-  * Draft box + searchable Style dropdown
 
 Earlier (still in this fork vs stock 1.52.1)
   * Krea 2 support + reference images + Turbo ER SDE preset
   * Augment workspace (regional edits)
-  * Tooling-nodes scan patch to reduce freezes on slow disks
+  * Tooling-nodes scan patch (tooling-nodes-api.py) — apply on every install
   * Docker width / Animate combo label polish for narrow docks
 
 Please report issues with logs from %APPDATA%\krita\ai_diffusion\logs\

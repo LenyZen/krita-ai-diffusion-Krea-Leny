@@ -1,17 +1,20 @@
 <h1><img width="64px" src="ai_diffusion/icons/logo-128.png"> Generative AI <i>for Krita</i></h1>
 
-> **LenyZen fork (Krea / Wan / SeedVR beta)** — based on [Acly/krita-ai-diffusion](https://github.com/Acly/krita-ai-diffusion) **v1.52.1**.  
+> **LenyZen fork (Krea / Comic / Wan / SeedVR beta)** — based on [Acly/krita-ai-diffusion](https://github.com/Acly/krita-ai-diffusion) **v1.52.1**.  
 > Plugin version: **1.52.1-beta.3**  
 > **Beta install + model download links:** see [`INSTALL-BETA.txt`](INSTALL-BETA.txt) · [`CHANGELOG-BETA.txt`](CHANGELOG-BETA.txt)  
 > Build a Krita plugin zip: `powershell -ExecutionPolicy Bypass -File scripts/build-beta-package.ps1`
 
 ### Fork highlights (this repo)
+* **Critical load fix** — apply included `tooling-nodes-api.py` over `comfyui-tooling-nodes/api.py`. Without it, ComfyUI often freezes for minutes (or looks crashed) while scanning models on Windows/slow disks, so Krita never gets results and many users never reach the new workspaces. See `INSTALL-BETA.txt` step 2.
 * **Krea 2** generation, refs, Turbo sampler preset
 * **Describe** (Florence-2) + Clio styles / Qwen-VL Enhance
 * **Augment** regional edits
-* **Animate (Wan 2.2)** — T2V / I2V / FLF2V, Extend, Stitch, sampler presets
+* **Comic** — multi-panel page layouts, character/scene plates, draft → refine → lock → assemble
+* **SVG / CNC / Laser** — silhouette / line art / limited-color gen, Export SVG or Add Vector Layer
+* **Animate (Wan 2.2)** — T2V / I2V / FLF2V, Extend, Stitch, sampler presets, Video LoRAs
 * **SeedVR Enhance** workspace (separate from ESRGAN Upscale)
-* Tooling-nodes scan patch (`tooling-nodes-api.py`) + Windows UTF-8 Comfy env
+* Windows UTF-8 env for managed ComfyUI (avoids SeedVR emoji console crash)
 
 Upstream docs and community still apply for core workflows. Prefer this fork’s `INSTALL-BETA.txt` for the extras above.
 
@@ -39,9 +42,12 @@ The main goals of this project are:
 ## <a name="features"></a> Features
 
 ### This fork
+* **Tooling-nodes load fix** (required for a usable install): patched `tooling-nodes-api.py` — see install guide
 * **Krea 2**: Text-to-image / inpaint / LoRAs / reference images + Turbo ER SDE preset
 * **Describe**: Florence-2 captions, Clio styles, Qwen-VL Enhance Description
 * **Augment**: Up to 10 rectangular region edits on a layer
+* **Comic**: Page layouts, characters/scenes/panel beats, generate, lock panels, assemble full page
+* **SVG / CNC / Laser**: Vector-friendly generation; export SVG or insert a Krita vector layer
 * **Animate (Wan 2.2)**: T2V / I2V / FLF2V, Extend, Stitch, Video LoRAs, sampler presets
 * **SeedVR Enhance**: SeedVR2 diffusion upscale (separate from ESRGAN Upscale)
 
