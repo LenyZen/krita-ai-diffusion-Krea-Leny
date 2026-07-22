@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import struct
 import uuid
 from collections.abc import Iterable, Sequence
@@ -20,8 +21,16 @@ from ..style import Styles
 from ..util import client_logger as log
 from ..util import parse_enum
 from ..websockets.src import websockets
+
+# The websockets library retries failed connection attempts silently and only reports
+# them to its own logger - forward those messages to client.log so they are visible.
+_websockets_logger = logging.getLogger("websockets.client")
+if not _websockets_logger.handlers:
+    _websockets_logger.setLevel(logging.INFO)
+    for _handler in log.handlers:
+        _websockets_logger.addHandler(_handler)
 from . import resources
-from .api import WorkflowInput
+from .api import WorkflowInput, WorkflowKind
 from .client import (
     CheckpointInfo,
     Client,
@@ -134,7 +143,8 @@ class Progress:
         # Add +1 to node count so progress doesn't go to 100% until images are received.
         node_part = self._nodes / (self._info.node_count + 1)
         sample_part = self._samples / max(self._info.sample_count, 1)
-        return 0.2 * node_part + 0.8 * sample_part
+        # Clamp: jobs without sampling steps (eg. describe) still emit progress messages.
+        return min(1.0, 0.2 * node_part + 0.8 * sample_part)
 
 
 class ComfyClient(Client):
@@ -300,7 +310,22 @@ class ComfyClient(Client):
         except asyncio.CancelledError:
             pass
 
+    async def free_vram(self, unload_models: bool = True, free_memory: bool = True):
+        """Ask ComfyUI to unload cached models so a VRAM-heavy job can fit."""
+        try:
+            await self._post(
+                "free", {"unload_models": unload_models, "free_memory": free_memory}
+            )
+            log.info("Requested ComfyUI to free VRAM (unload_models=%s)", unload_models)
+        except Exception as e:
+            log.warning(f"Could not free VRAM before job: {e!s}")
+
     async def _run_job(self, job: JobInfo):
+        # Describe (especially Qwen-VL) often OOMs on 12 GB cards if Krea/diffusion
+        # weights are still resident — unload first so the VLM can load.
+        if job.work.kind in (WorkflowKind.describe, WorkflowKind.seedvr):
+            await self.free_vram()
+
         workflow = create_workflow(job.work, self.models)
         if settings.debug_dump_workflow:
             workflow.embed_images().dump(util.log_dir)
@@ -321,6 +346,11 @@ class ComfyClient(Client):
             if result["prompt_id"] != job.id:
                 log.error(f"Prompt ID mismatch: {result['prompt_id']} != {job.id}")
                 raise ValueError("Prompt ID mismatch - Please update ComfyUI to 0.3.45 or later!")
+            log.info(
+                f"Submitted job {job.id} ({job.work.kind.name}, "
+                f"{job.sample_count} sampling steps)"
+            )
+            asyncio.create_task(self._watch_job_via_history(job.id))
         except Exception:
             self._waiting_job.clear()
             raise
@@ -330,6 +360,7 @@ class ComfyClient(Client):
         args = websocket_args(settings.server_authorization)
         async for websocket in websockets.connect(f"{url}/ws?clientId={self._id}", **args):
             try:
+                log.info(f"Websocket connected to {url}")
                 await self._subscribe_workflows()
                 await self._listen_websocket(websocket)
             except websockets.exceptions.ConnectionClosedError as e:
@@ -370,6 +401,7 @@ class ComfyClient(Client):
                     id = msg["data"]["prompt_id"]
                     self._active_job = await self._start_job(id)
                     if self._active_job is not None:
+                        log.info(f"Job {id} started on server")
                         progress = Progress(self._active_job)
                         images = ImageCollection()
                         result = None
@@ -381,7 +413,13 @@ class ComfyClient(Client):
 
                 if msg["type"] == "executing" and msg["data"]["node"] is None:
                     job_id = msg["data"]["prompt_id"]
+                    active = self._active_job
+                    text_only = active is not None and active.work.kind is WorkflowKind.describe
                     if self._clear_job(job_id):
+                        if text_only:
+                            # Describe jobs produce text output (already reported), no images.
+                            await self._report(ClientEvent.finished, job_id, 1, result=result)
+                            continue
                         if len(images) == 0:
                             # It may happen if the entire execution is cached and no images are sent.
                             images = last_images
@@ -392,6 +430,10 @@ class ComfyClient(Client):
                             await self._report(ClientEvent.error, job_id, error=err)
                         else:
                             last_images = images
+                            log.info(
+                                f"Job {job_id} finished via websocket "
+                                f"({len(images)} image(s))"
+                            )
                             await self._report(
                                 ClientEvent.finished, job_id, 1, images=images, result=result
                             )
@@ -556,14 +598,81 @@ class ComfyClient(Client):
     async def _transfer_result_images(self, msg: dict) -> list[Image]:
         output = msg["data"]["output"]
         if output is not None and "images" in output:
-            transfers = []
-            for img in output["images"]:
+            return await self._transfer_output_images(output["images"])
+        return []
+
+    async def _transfer_output_images(self, images: list[dict]) -> list[Image]:
+        transfers = []
+        for img in images:
+            source = img.get("source")
+            id = img.get("id")
+            if source == "http" and id is not None:
+                transfers.append(self._transfer_result_image(id))
+        if len(transfers) == 0:
+            return []
+        return list(await asyncio.gather(*transfers))
+
+    async def _images_from_history_outputs(self, outputs: dict) -> ImageCollection:
+        images = ImageCollection()
+        transfers = []
+        for node_output in outputs.values():
+            if "images" not in node_output:
+                continue
+            for img in node_output["images"]:
                 source = img.get("source")
                 id = img.get("id")
                 if source == "http" and id is not None:
                     transfers.append(self._transfer_result_image(id))
-            return await asyncio.gather(*transfers)
-        return []
+        if transfers:
+            for image in await asyncio.gather(*transfers):
+                images.append(image)
+        return images
+
+    async def _watch_job_via_history(self, job_id: str):
+        """Recover results when websocket messages are lost during long model loads."""
+        deadline = time() + 3600
+        while time() < deadline and self._is_connected:
+            await asyncio.sleep(3)
+            waiting = self._waiting_job.peek()
+            active = self._active_job
+            if waiting is None and (active is None or active.id != job_id):
+                return
+
+            try:
+                history = await self._get(f"history/{job_id}", timeout=60)
+            except Exception as e:
+                log.debug(f"History poll for job {job_id} failed: {e!s}")
+                continue
+
+            entry = history.get(job_id) if isinstance(history, dict) else None
+            if entry is None:
+                continue
+
+            outputs = entry.get("outputs")
+            if not outputs:
+                continue
+
+            if active is None or active.id != job_id:
+                started = await self._start_job(job_id)
+                if started is None:
+                    continue
+                log.warning(f"Job {job_id} started via history recovery (websocket missed)")
+
+            images = await self._images_from_history_outputs(outputs)
+            if len(images) == 0:
+                continue
+
+            if self._clear_job(job_id):
+                log.info(
+                    f"Job {job_id} finished via history recovery ({len(images)} image(s))"
+                )
+                await self._report(ClientEvent.finished, job_id, 1, images=images)
+                return
+
+        if self._active_job and self._active_job.id == job_id:
+            log.error(
+                f"Job {job_id} timed out: server may have finished but results were not received"
+            )
 
     async def translate(self, text: str, lang: str):
         try:
@@ -680,7 +789,15 @@ def websocket_url(url_http: str):
 
 
 def websocket_args(auth_token: str):
-    args: dict[str, Any] = {"max_size": 2**30, "ping_timeout": 60}
+    # Long open timeout: slow handshakes during heavy server load.
+    # ping_interval=None: don't send client pings while ComfyUI blocks its event loop for
+    # minutes loading models from slow drives — missed pongs would drop the connection and
+    # progress/images never reach Krita even though the job completes on the server.
+    args: dict[str, Any] = {
+        "max_size": 2**30,
+        "ping_interval": None,
+        "open_timeout": 120,
+    }
     if auth_token:
         args["additional_headers"] = {"Authorization": f"Bearer {auth_token}"}
     return args

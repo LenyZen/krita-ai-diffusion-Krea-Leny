@@ -1,6 +1,21 @@
 <h1><img width="64px" src="ai_diffusion/icons/logo-128.png"> Generative AI <i>for Krita</i></h1>
 
-✨[Features](#features) | ⭳ [Download](https://github.com/Acly/krita-ai-diffusion/releases/latest) | 🛠️[Installation](https://docs.interstice.cloud/installation) | 🎞️ [Video](https://youtu.be/Ly6USRwTHe0) | 🖼️[Gallery](#gallery) | 📖[User Guide](https://docs.interstice.cloud) | 💬[Discussion](https://github.com/Acly/krita-ai-diffusion/discussions) | 🗣️[Discord](https://discord.gg/pWyzHfHHhU)
+> **LenyZen fork (Krea / Wan / SeedVR beta)** — based on [Acly/krita-ai-diffusion](https://github.com/Acly/krita-ai-diffusion) **v1.52.1**.  
+> Plugin version: **1.52.1-beta.3**  
+> **Beta install + model download links:** see [`INSTALL-BETA.txt`](INSTALL-BETA.txt) · [`CHANGELOG-BETA.txt`](CHANGELOG-BETA.txt)  
+> Build a Krita plugin zip: `powershell -ExecutionPolicy Bypass -File scripts/build-beta-package.ps1`
+
+### Fork highlights (this repo)
+* **Krea 2** generation, refs, Turbo sampler preset
+* **Describe** (Florence-2) + Clio styles / Qwen-VL Enhance
+* **Augment** regional edits
+* **Animate (Wan 2.2)** — T2V / I2V / FLF2V, Extend, Stitch, sampler presets
+* **SeedVR Enhance** workspace (separate from ESRGAN Upscale)
+* Tooling-nodes scan patch (`tooling-nodes-api.py`) + Windows UTF-8 Comfy env
+
+Upstream docs and community still apply for core workflows. Prefer this fork’s `INSTALL-BETA.txt` for the extras above.
+
+✨[Features](#features) | ⭳ [Upstream releases](https://github.com/Acly/krita-ai-diffusion/releases/latest) | 🛠️[Installation](https://docs.interstice.cloud/installation) | 🎞️ [Video](https://youtu.be/Ly6USRwTHe0) | 🖼️[Gallery](#gallery) | 📖[User Guide](https://docs.interstice.cloud) | 💬[Discussion](https://github.com/Acly/krita-ai-diffusion/discussions) | 🗣️[Discord](https://discord.gg/pWyzHfHHhU)
 
 This is a plugin to use generative AI in image painting and editing workflows
 from within Krita. Visit
@@ -23,6 +38,14 @@ The main goals of this project are:
 
 ## <a name="features"></a> Features
 
+### This fork
+* **Krea 2**: Text-to-image / inpaint / LoRAs / reference images + Turbo ER SDE preset
+* **Describe**: Florence-2 captions, Clio styles, Qwen-VL Enhance Description
+* **Augment**: Up to 10 rectangular region edits on a layer
+* **Animate (Wan 2.2)**: T2V / I2V / FLF2V, Extend, Stitch, Video LoRAs, sampler presets
+* **SeedVR Enhance**: SeedVR2 diffusion upscale (separate from ESRGAN Upscale)
+
+### Upstream (Acly)
 * **Inpainting**: Use selections for generative fill, expand, to add or remove objects
 * **Live Painting**: Let AI interpret your canvas in real time for immediate feedback. [Watch Video](https://youtu.be/AF2VyqSApjA?si=Ve5uQJWcNOATtABU)
 * **Upscaling**: Upscale and enrich images to 4k, 8k and beyond without running out of memory.

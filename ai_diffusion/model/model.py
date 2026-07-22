@@ -37,6 +37,7 @@ from ..backend.client import (
     ClientEvent,
     ClientMessage,
     ClientOutput,
+    TextOutput,
     filter_supported_styles,
     is_style_supported,
     resolve_arch,
@@ -72,6 +73,18 @@ from .custom_workflow import (
 from .jobs import Job, JobKind, JobParams, JobQueue, JobRegion, JobState
 from .properties import ObservableProperties, Property
 from .region import Region, RegionLink, RootRegion, get_region_inpaint_mask, process_regions
+from .augment import AugmentWorkspace
+from .animate import AnimateWorkspace
+from .seedvr import SeedVRWorkspace
+from .comic import ComicWorkspace
+from .clio_styles import CLIO_STYLE_NONE, clio_style_prompt
+from .describe_perspectives import (
+    Perspective,
+    build_enhance_instruction,
+    build_instruction,
+    enrich_caption,
+)
+from .vector_cnc import VectorCncWorkspace
 
 
 class QueueMode(Enum):
@@ -86,6 +99,12 @@ class Workspace(Enum):
     live = 2
     animation = 3
     custom = 4
+    describe = 5
+    augment = 6
+    vector_cnc = 7
+    comic = 8
+    animate = 9
+    seedvr = 10
 
 
 class ProgressKind(Enum):
@@ -177,6 +196,12 @@ class DocumentModel(QObject, ObservableProperties):
         self.live = LiveWorkspace(self)
         self.animation = AnimationWorkspace(self)
         self.custom = CustomWorkspace(workflows, self._generate_custom, self.jobs)
+        self.describe = DescribeWorkspace(self)
+        self.augment = AugmentWorkspace(self)
+        self.vector_cnc = VectorCncWorkspace(self)
+        self.comic = ComicWorkspace(self)
+        self.animate = AnimateWorkspace(self)
+        self.seedvr = SeedVRWorkspace(self)
         self._style_connection: QMetaObject.Connection | None = None
 
         self.jobs.selection_changed.connect(self.update_preview)
@@ -220,6 +245,8 @@ class DocumentModel(QObject, ObservableProperties):
 
         try:
             input, job_params, cond_orig = self._prepare_workflow()
+            if self.workspace is Workspace.vector_cnc:
+                self.vector_cnc.annotate_job_params(job_params)
         except Exception as e:
             self.report_error(util.log_error(e))
             return
@@ -675,17 +702,33 @@ class DocumentModel(QObject, ObservableProperties):
             self.progress_kind = ProgressKind.upload
             self.progress = message.progress
         elif message.event is ClientEvent.output:
-            self.custom.handle_output(job, message.result)
+            if job.kind is JobKind.describe:
+                if not self.comic.handle_finalize_output(job, message.result):
+                    self.describe.handle_output(message.result)
+            else:
+                self.custom.handle_output(job, message.result)
         elif message.event is ClientEvent.finished:
             if message.error:  # successful jobs may have encountered some warnings
                 self.report_error(Error.from_string(message.error, ErrorKind.warning))
             if message.images:
-                self.jobs.set_results(job, message.images)
+                images = message.images
+                if (
+                    job.kind is JobKind.diffusion
+                    and job.params.metadata.get("workspace") == "vector_cnc"
+                ):
+                    images = self.vector_cnc.post_process(images)
+                self.jobs.set_results(job, images)
             if job.kind is JobKind.control_layer:
                 assert job.control is not None
                 job.control.layer_id = self.add_control_layer(job, message.result).id
             elif job.kind is JobKind.upscaling:
                 self.add_upscale_layer(job)
+                if job.params.metadata.get("workspace") == "seedvr":
+                    self.seedvr._set_status(
+                        _("SeedVR done — {w}×{h}").format(
+                            w=job.params.bounds.width, h=job.params.bounds.height
+                        )
+                    )
             self._finish_job(job, message.event)
         elif message.event is ClientEvent.interrupted:
             self._finish_job(job, message.event)
@@ -700,14 +743,46 @@ class DocumentModel(QObject, ObservableProperties):
     def _finish_job(self, job: Job, event: ClientEvent):
         if job.kind is JobKind.upscaling:
             self.upscale.set_in_progress(False)
+            if job.params.metadata.get("workspace") == "seedvr":
+                self.seedvr.set_in_progress(False)
+                if event is not ClientEvent.finished:
+                    self.seedvr._set_status(_("SeedVR cancelled or failed"))
+        elif job.kind is JobKind.describe:
+            if job.params.metadata.get("comic_finalize_panel") is not None:
+                self.comic.finish_finalize_job()
+            else:
+                self.describe.set_in_progress(False)
+        elif job.kind is JobKind.augment:
+            if not (
+                event is ClientEvent.finished and self.augment._regions_remaining > 1
+            ):
+                self.augment.set_in_progress(False)
+        elif job.kind is JobKind.comic:
+            # Keep in_progress until ComicWorkspace finishes compositing (or cancel/error).
+            if event is not ClientEvent.finished:
+                self.comic.set_in_progress(False)
 
         if event is ClientEvent.finished:
             self.jobs.notify_finished(job)
             self.progress = 1
 
-            if job.id and job.kind in [JobKind.diffusion, JobKind.animation]:
+            if job.kind is JobKind.augment and self.augment._regions_remaining > 1:
+                self.augment._regions_remaining -= 1
+                self.jobs.remove(job)
+                return
+
+            if job.kind is JobKind.comic:
+                if self.comic._panels_remaining > 1:
+                    self.comic._panels_remaining -= 1
+                    self.jobs.remove(job)
+                    return
+                # Last panel: leave job for compositing; ComicWorkspace handles preview/apply.
+                self.comic._panels_remaining = 0
+                return
+
+            if job.id and job.kind in [JobKind.diffusion, JobKind.animation, JobKind.augment]:
                 action = settings.generation_finished_action
-                if action is GenerationFinishedAction.preview and self._layer is None:
+                if action is GenerationFinishedAction.preview:
                     self.jobs.select(job.id, 0)
                 elif action is GenerationFinishedAction.apply:
                     self.apply_generated_result(job.id, 0)
@@ -846,6 +921,10 @@ class DocumentModel(QObject, ObservableProperties):
         job = self.jobs.find(job_id)
         assert job is not None, "Cannot apply result, invalid job id"
 
+        if job.kind is JobKind.comic:
+            self.comic.apply_page(job_id, index)
+            return
+
         if job.kind is JobKind.animation and len(job.results) > 1:
             self.apply_animation(job)
         elif job.params.is_layered and len(job.results) > 1:
@@ -896,12 +975,17 @@ class DocumentModel(QObject, ObservableProperties):
         if self._layer:
             self._layer.remove()
             self._layer = None
+        prefix = (
+            "[SeedVR] "
+            if job.params.metadata.get("workspace") == "seedvr"
+            else "[Upscale] "
+        )
         self.apply_result(
             job.results[0],
             job.params,
             settings.apply_behavior,
             settings.apply_region_behavior,
-            "[Upscale] ",
+            prefix,
         )
 
     def set_workspace(self, workspace: Workspace):
@@ -1186,6 +1270,257 @@ class UpscaleWorkspace(QObject, ObservableProperties):
             target_extent=self.target_extent,
             seed=model.seed if model.fixed_seed else workflow.generate_seed(),
         )
+
+
+class DescribeLevel(Enum):
+    """Maps UI detail levels to Florence-2 task names."""
+
+    tags = "prompt_gen_tags"
+    brief = "caption"
+    detailed = "detailed_caption"
+    extensive = "more_detailed_caption"
+    mixed = "prompt_gen_mixed_caption_plus"
+
+
+class DescribeWorkspace(QObject, ObservableProperties):
+    """Generates a text description of the active layer using a vision-language model."""
+
+    level = Property(DescribeLevel.extensive, persist=True)
+    perspective = Property(Perspective.none, persist=True)
+    custom_perspective = Property("", persist=True)
+    clio_style = Property(CLIO_STYLE_NONE, persist=True)
+    draft_text = Property("", persist=True)
+    result_text = Property("", persist=True)
+    can_generate = Property(True)
+
+    level_changed = pyqtSignal(DescribeLevel)
+    perspective_changed = pyqtSignal(Perspective)
+    custom_perspective_changed = pyqtSignal(str)
+    clio_style_changed = pyqtSignal(str)
+    draft_text_changed = pyqtSignal(str)
+    result_text_changed = pyqtSignal(str)
+    can_generate_changed = pyqtSignal(bool)
+    modified = pyqtSignal(QObject, str)
+
+    def __init__(self, model: DocumentModel):
+        super().__init__()
+        self._model = weakref.ref(model)
+        self._in_progress = False
+        self._enrich_output = False
+
+    def _clio_args(self) -> tuple[str, str]:
+        name = (self.clio_style or "").strip()
+        if not name:
+            return "", ""
+        prompt = clio_style_prompt(name)
+        if not prompt:
+            return "", ""
+        return name, prompt
+
+    def describe_image(self):
+        model = ensure(self._model())
+        ok, msg = model.document.check_color_mode()
+        if not ok and msg:
+            model.report_error(msg)
+            return
+        client = model._connection.client
+        style_name, style_prompt = self._clio_args()
+        # Tag output doesn't benefit from prose enrichment, always use Florence-2 for it —
+        # unless a Clio style is selected (needs Qwen instruction following).
+        use_qwen = self.level is not DescribeLevel.tags or bool(style_prompt)
+        vram_gb = client.device_info.vram
+        qwen_model = self.find_qwenvl_model(client, vram_gb) if use_qwen else None
+        if style_prompt and qwen_model is None:
+            model.report_error(
+                _("Clio art styles need Qwen-VL.")
+                + " "
+                + _("Install the ComfyUI-QwenVL node pack on the server, or clear the Style dropdown.")
+            )
+            return
+        caption_model = None
+        if qwen_model is None:
+            caption_model = self.find_caption_model(client)
+            if caption_model is None:
+                model.report_error(
+                    _("No caption model found.")
+                    + " "
+                    + _(
+                        "The server needs the ComfyUI-Florence2 node package and a Florence-2 model in the models/LLM folder."
+                    )
+                )
+                return
+        try:
+            layer = model.layers.active
+            bounds = layer.compute_bounds()
+            if bounds.is_zero:
+                model.report_error(_("The active layer is empty, there is nothing to describe."))
+                return
+            image = layer.get_pixels(bounds)
+            if qwen_model is not None:
+                instruction = build_instruction(
+                    self.perspective,
+                    self.level.value,
+                    self.custom_perspective,
+                    style_name,
+                    style_prompt,
+                )
+                quantization = self._qwenvl_quantization(qwen_model, vram_gb)
+                input = workflow.prepare_describe(
+                    image, self.level.value, qwen_model, "qwenvl", instruction, quantization
+                )
+                self._enrich_output = False
+            else:
+                input = workflow.prepare_describe(image, self.level.value, ensure(caption_model))
+                self._enrich_output = self.level is not DescribeLevel.tags
+            job = model.jobs.add(JobKind.describe, JobParams(bounds, f"[Describe] {layer.name}"))
+        except Exception as e:
+            model.report_error(util.log_error(e))
+            return
+        model.clear_error()
+        self.set_in_progress(True)
+        eventloop.run(_report_errors(model, model._enqueue_job(job, input)))
+        return job
+
+    def enhance_description(self):
+        """Expand the user's draft with Qwen-VL, grounded in the active layer image."""
+        model = ensure(self._model())
+        draft = self.draft_text.strip()
+        if not draft:
+            model.report_error(_("Type a draft description to enhance."))
+            return
+        ok, msg = model.document.check_color_mode()
+        if not ok and msg:
+            model.report_error(msg)
+            return
+        client = model._connection.client
+        vram_gb = client.device_info.vram
+        qwen_model = self.find_qwenvl_model(client, vram_gb)
+        if qwen_model is None:
+            model.report_error(
+                _("Enhance Description needs Qwen-VL.")
+                + " "
+                + _(
+                    "Install the ComfyUI-QwenVL node pack on the server"
+                    " (same tip as perspective re-description)."
+                )
+            )
+            return
+        try:
+            layer = model.layers.active
+            bounds = layer.compute_bounds()
+            if bounds.is_zero:
+                model.report_error(
+                    _("The active layer is empty — enhance uses the image as context.")
+                )
+                return
+            image = layer.get_pixels(bounds)
+            style_name, style_prompt = self._clio_args()
+            instruction = build_enhance_instruction(
+                draft,
+                self.perspective,
+                self.level.value,
+                self.custom_perspective,
+                style_name,
+                style_prompt,
+            )
+            quantization = self._qwenvl_quantization(qwen_model, vram_gb)
+            input = workflow.prepare_describe(
+                image, self.level.value, qwen_model, "qwenvl", instruction, quantization
+            )
+            self._enrich_output = False
+            job_params = JobParams(bounds, f"[Enhance] {layer.name}")
+            job_params.metadata["describe_enhance"] = True
+            job = model.jobs.add(JobKind.describe, job_params)
+        except Exception as e:
+            model.report_error(util.log_error(e))
+            return
+        model.clear_error()
+        self.set_in_progress(True)
+        eventloop.run(_report_errors(model, model._enqueue_job(job, input)))
+        return job
+
+    def handle_output(self, output: ClientOutput | None):
+        if isinstance(output, TextOutput) and output.text:
+            text = output.text.strip()
+            if self._enrich_output:
+                text = enrich_caption(self.perspective, text, self.custom_perspective)
+            self.result_text = text
+
+    def set_in_progress(self, in_progress: bool):
+        self._in_progress = in_progress
+        self.can_generate = not in_progress
+
+    def use_as_prompt(self):
+        model = ensure(self._model())
+        if self.result_text:
+            model.regions.positive = self.result_text
+
+    @staticmethod
+    def find_caption_model(client: Client) -> str | None:
+        if "Florence2ModelLoader" not in client.models.node_inputs:
+            return None
+        options = client.models.node_inputs.options("Florence2ModelLoader", "model")
+        candidates = [o for o in options if "florence" in o.lower()]
+        if not candidates:
+            return None
+
+        def preference(name: str):
+            name = name.lower()
+            return ("promptgen" not in name, "large" not in name, name)
+
+        return sorted(candidates, key=preference)[0]
+
+    @staticmethod
+    def find_qwenvl_model(client: Client, vram_gb: int = 0) -> str | None:
+        """Detect the ComfyUI-QwenVL node pack and pick an instruct model.
+
+        When available, it replaces Florence-2 since it follows free-form
+        instructions and produces much richer descriptions. On 12–14 GB GPUs
+        prefer 2B/4B so describe can coexist with leftover diffusion VRAM.
+        """
+        if "AILab_QwenVL" not in client.models.node_inputs:
+            return None
+        options = client.models.node_inputs.options("AILab_QwenVL", "model_name")
+        candidates = [o for o in options if "instruct" in o.lower()]
+        if not candidates:
+            candidates = list(options)
+        if not candidates:
+            return None
+
+        # Prefer smaller models on consumer GPUs; 8B+ needs a free card.
+        if vram_gb and vram_gb <= 14:
+            size_order = ["2b", "3b", "4b", "7b", "8b", "32b", "72b"]
+        else:
+            size_order = ["8b", "7b", "4b", "3b", "2b", "32b", "72b"]
+
+        def preference(name: str):
+            lower = name.lower()
+            size = next((i for i, s in enumerate(size_order) if s in lower), len(size_order))
+            return ("thinking" in lower, "fp8" in lower, "qwen3" not in lower, size, lower)
+
+        return sorted(candidates, key=preference)[0]
+
+    @staticmethod
+    def _qwenvl_quantization(model_name: str, vram_gb: int) -> str:
+        """Pick on-the-fly quantization so the model fits the GPU.
+
+        Values must match the AILab_QwenVL quantization combo options.
+        """
+        lower = model_name.lower()
+        if "fp8" in lower:
+            return ""  # pre-quantized, use server default
+        large = any(s in lower for s in ("7b", "8b", "32b", "72b"))
+        medium = any(s in lower for s in ("3b", "4b"))
+        # 12 GB cards often still have Krea/diffusion weights resident; be aggressive.
+        if vram_gb and vram_gb <= 12:
+            if large or medium:
+                return "4-bit (VRAM-friendly)"
+            return "8-bit (Balanced)"
+        if vram_gb and vram_gb < 8:
+            return "4-bit (VRAM-friendly)"
+        if large and vram_gb and vram_gb < 20:
+            return "8-bit (Balanced)"
+        return "None (FP16)"
 
 
 class LiveScheduler:

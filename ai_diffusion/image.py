@@ -501,6 +501,29 @@ class Image:
         return cls._mask_op(lhs, rhs, QPainter.CompositionMode.CompositionMode_SourceOver)
 
     @staticmethod
+    def mask_content_bounds(image: Image, threshold: int = 1) -> Bounds | None:
+        """Tight axis-aligned bounds of mask pixels above threshold."""
+        assert image.is_mask
+        w, h = image.extent.width, image.extent.height
+        min_x, min_y = w, h
+        max_x, max_y = -1, -1
+        qimg = image._qimage
+        for y in range(h):
+            for x in range(w):
+                if qGray(qimg.pixel(x, y)) >= threshold:
+                    if x < min_x:
+                        min_x = x
+                    if y < min_y:
+                        min_y = y
+                    if x > max_x:
+                        max_x = x
+                    if y > max_y:
+                        max_y = y
+        if max_x < 0:
+            return None
+        return Bounds(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+
+    @staticmethod
     def compare(img_a: Image, img_b: Image):
         assert extent_equal(img_a._qimage, img_b._qimage)
         import numpy as np

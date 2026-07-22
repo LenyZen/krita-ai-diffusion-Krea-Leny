@@ -724,6 +724,94 @@ class ComfyWorkflow:
             prompt=prompt,
         )
 
+    def text_encode_krea2(
+        self,
+        clip: Output,
+        images: list[Output],
+        prompt: str | Output,
+        weights: list[float] | None = None,
+    ):
+        """Encode Krea 2 text (+ optional vision refs) for normal t2i generation.
+
+        Prefer TextEncodeKrea2 with Krea2's *trained descriptor* system prompt.
+        Krea2EncodeRebalance uses an edit/instruct template ("alter the input image")
+        and always labels refs as "Picture N", which frequently produces side-by-side
+        before/after diptychs — wrong for Generate / Comic panel generation.
+        """
+        if len(images) > 4:
+            raise RuntimeError("Too many reference images for Krea 2 (max 4)")
+
+        if "TextEncodeKrea2" in self.node_defs:
+            # Map ref strength → vision megapixel budget (TextEncodeKrea2 has no token tiers).
+            strength = 1.0
+            if weights:
+                strength = sum(weights) / max(len(weights), 1)
+            if strength <= 0.35:
+                megapixels = 0.35
+            elif strength <= 0.85:
+                megapixels = 0.85
+            elif strength <= 1.35:
+                megapixels = 1.25
+            else:
+                megapixels = 1.75
+            inputs: dict[str, Any] = {
+                "clip": clip,
+                "prompt": prompt,
+                "vision_megapixels": megapixels,
+            }
+            for i, image in enumerate(images):
+                inputs[f"image{i + 1}"] = image
+            # Omit system_prompt so TextEncodeKrea2 uses KREA2_SYSTEM_DEFAULT (descriptor).
+            return self.add("TextEncodeKrea2", 1, **inputs)
+
+        # Fallback if the TextEncodeKrea2 custom node is missing.
+        def token_budget(s: float):
+            if s <= 0.35:
+                return "low"
+            if s <= 0.85:
+                return "normal"
+            if s <= 1.35:
+                return "high"
+            return "max"
+
+        inputs = {"text": prompt, "clip": clip}
+        for i, image in enumerate(images):
+            inputs[f"image{i + 1}"] = image
+            s = weights[i] if weights and i < len(weights) else 1.0
+            inputs[f"image{i + 1}_tokens"] = token_budget(s)
+        return self.add("Krea2EncodeRebalance", 1, **inputs)
+
+    def text_encode_krea2_augment(
+        self,
+        clip: Output,
+        prompt: str,
+        image: Output,
+        mask: Output,
+        mask_padding: float = 0.18,
+        vision_megapixels: float = 1.25,
+    ):
+        """TextEncodeKrea2 with masked reference (Workflow-4); falls back to Krea2EncodeRebalance."""
+        krea2_augment_system = (
+            "Describe the key features of the reference image (color, shape, size, texture, "
+            "objects, background), then explain how the user's instruction should combine with or "
+            "alter it, and generate a new image meeting the instruction while staying consistent "
+            "with the reference where appropriate:"
+        )
+        if "TextEncodeKrea2" in self.node_defs:
+            system = self.add("Krea2SystemPrompt", 1, text=krea2_augment_system)
+            return self.add(
+                "TextEncodeKrea2",
+                1,
+                clip=clip,
+                prompt=prompt,
+                image1=image,
+                mask1=mask,
+                mask_padding=mask_padding,
+                vision_megapixels=vision_megapixels,
+                system_prompt=system,
+            )
+        return self.text_encode_krea2(clip, [image], prompt, [1.5])
+
     def background_region(self, conditioning: Output):
         return self.add("ETN_BackgroundRegion", 1, conditioning=conditioning)
 
@@ -1226,6 +1314,55 @@ class ComfyWorkflow:
                 result = (img, mask)
         assert result is not None
         return result
+
+    def krea2_prompt_enhance(self, model: Output, strength: float = 1.0):
+        # Runtime patch (ComfyUI-Krea2T-Enhancer) which improves Krea 2 prompt adherence
+        # by boosting selected text-fusion taps during sampling. Model weights unchanged.
+        return self.add(
+            "ComfyUI-Krea2T-Enhancer", 1, model=model, enabled=True, strength=strength, debug=False
+        )
+
+    def describe_image(self, image: Output, task: str, model: str):
+        # Florence-2 vision-language model (ComfyUI-Florence2 node pack) generates a
+        # text description of the image, which is sent back to Krita as text output.
+        loader = self.add_cached("Florence2ModelLoader", 1, model=model, precision="fp16")
+        caption = self.add(
+            "Florence2Run",
+            4,
+            image=image,
+            florence2_model=loader,
+            text_input="",
+            task=task,
+            fill_mask=False,
+            keep_model_loaded=False,
+            max_new_tokens=512,
+            num_beams=1,
+            do_sample=False,
+            seed=1,
+        )[2]
+        return self.add("ETN_KritaSendText", 1, value=caption, name="Description", type="text")
+
+    def describe_image_qwenvl(
+        self, image: Output, instruction: str, model: str, quantization: str = ""
+    ):
+        # Qwen-VL instruction-following vision-language model (ComfyUI-QwenVL node
+        # pack by 1038lab). Unlike Florence-2 it accepts free-form instructions,
+        # allowing perspective-based, richly evocative descriptions.
+        # preset_prompt is filled with the server default by add_default_values
+        # (its combo option list varies per install). custom_prompt overrides
+        # the preset in the node implementation.
+        args: dict[str, Any] = dict(
+            model_name=model,
+            custom_prompt=instruction,
+            max_tokens=1024,
+            keep_model_loaded=False,
+            seed=1,
+            image=image,
+        )
+        if quantization:
+            args["quantization"] = quantization
+        response = self.add("AILab_QwenVL", 1, **args)
+        return self.add("ETN_KritaSendText", 1, value=response, name="Description", type="text")
 
     def send_image(self, image: Output):
         if self._run_mode is ComfyRunMode.runtime:

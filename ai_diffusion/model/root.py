@@ -170,6 +170,8 @@ class Root(QObject):
         model = self._find_model(msg.job_id)
         if model is not None:
             model.handle_message(msg)
+        elif msg.job_id:
+            log.warning(f"Received message {msg.event.name} for unknown job {msg.job_id}")
 
     def _update_files(self):
         if client := self._connection.client_if_connected:

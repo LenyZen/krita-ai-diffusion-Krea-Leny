@@ -1,0 +1,31 @@
+ComfyforKrita / Krita AI Diffusion — Beta Changelog
+====================================================
+
+1.52.1-beta.3  (2026-07-21)
+---------------------------
+Packaging & docs
+  * New beta install guide (INSTALL-BETA.txt) and this changelog
+  * Reproducible zip builder: scripts\build-beta-package.ps1
+  * INSTALL-BETA + README_WAN22: direct Hugging Face resolve links for
+    Krea 2, Florence-2, Wan T2V/I2V, TE/VAE, and T2V lightx2v LoRAs
+
+SeedVR Enhance
+  * New workspace (separate from ESRGAN Upscale)
+  * Presets for 12GB / Quality / Low VRAM
+  * Managed ComfyUI starts with UTF-8 env to avoid Windows console crashes
+
+Animate (Wan)
+  * I2V and FLF2V modes, Extend from last, Stitch to End
+  * Progress reporting; up to 3 Video LoRAs (high+low UNET)
+
+Describe
+  * Florence-2 captions; Clio style library; Enhance Description (Qwen-VL)
+  * Draft box + searchable Style dropdown
+
+Earlier (still in this fork vs stock 1.52.1)
+  * Krea 2 support + reference images + Turbo ER SDE preset
+  * Augment workspace (regional edits)
+  * Tooling-nodes scan patch to reduce freezes on slow disks
+  * Docker width / Animate combo label polish for narrow docks
+
+Please report issues with logs from %APPDATA%\krita\ai_diffusion\logs\

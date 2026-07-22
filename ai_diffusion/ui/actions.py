@@ -14,6 +14,14 @@ def generate():
             model.animation.generate()
         elif model.workspace is Workspace.custom:
             model.custom.generate()
+        elif model.workspace is Workspace.vector_cnc:
+            model.vector_cnc.generate()
+        elif model.workspace is Workspace.comic:
+            model.comic.generate_page()  # full-quality page; use Draft/Refine buttons for rough-in
+        elif model.workspace is Workspace.animate:
+            model.animate.generate()
+        elif model.workspace is Workspace.seedvr:
+            model.seedvr.enhance()
 
 
 def cancel_active():
@@ -38,7 +46,12 @@ def toggle_preview():
 
 def apply():
     if model := root.model_for_active_document():
-        if model.workspace is Workspace.generation and len(model.jobs.selection) > 0:
+        if model.workspace in (
+            Workspace.generation,
+            Workspace.vector_cnc,
+            Workspace.comic,
+            Workspace.animate,
+        ) and len(model.jobs.selection) > 0:
             model.apply_generated_result(*model.jobs.selection[0])
         elif model.workspace is Workspace.live:
             model.live.apply_result()

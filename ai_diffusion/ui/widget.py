@@ -887,6 +887,12 @@ class WorkspaceSelectWidget(QToolButton):
         Workspace.live: theme.icon("workspace-live"),
         Workspace.animation: theme.icon("workspace-animation"),
         Workspace.custom: theme.icon("workspace-custom"),
+        Workspace.describe: theme.icon("workspace-describe"),
+        Workspace.augment: theme.icon("workspace-augment"),
+        Workspace.vector_cnc: theme.icon("workspace-vector-cnc"),
+        Workspace.comic: theme.icon("workspace-comic"),
+        Workspace.animate: theme.icon("workspace-animate"),
+        Workspace.seedvr: theme.icon("workspace-seedvr"),
     }
 
     _value = Workspace.generation
@@ -900,6 +906,12 @@ class WorkspaceSelectWidget(QToolButton):
         menu.addAction(self._create_action(_("Live"), Workspace.live))
         menu.addAction(self._create_action(_("Animation"), Workspace.animation))
         menu.addAction(self._create_action(_("Graph"), Workspace.custom))
+        menu.addAction(self._create_action(_("Describe"), Workspace.describe))
+        menu.addAction(self._create_action(_("Augment"), Workspace.augment))
+        menu.addAction(self._create_action(_("SVG / CNC / Laser"), Workspace.vector_cnc))
+        menu.addAction(self._create_action(_("Comic"), Workspace.comic))
+        menu.addAction(self._create_action(_("Animate (Wan)"), Workspace.animate))
+        menu.addAction(self._create_action(_("SeedVR Enhance"), Workspace.seedvr))
 
         self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.setMenu(menu)
@@ -907,7 +919,8 @@ class WorkspaceSelectWidget(QToolButton):
         self.setToolTip(
             _("Switch between workspaces: image generation, upscaling, live preview and animation.")
         )
-        self.setMinimumWidth(int(self.sizeHint().width() * 1.6))
+        # Keep the workspace switcher compact so the AI docker can go thin
+        self.setMinimumWidth(max(28, int(self.sizeHint().width() * 1.1)))
         self.value = Workspace.generation
 
     def paintEvent(self, a0):

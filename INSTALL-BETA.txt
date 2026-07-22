@@ -1,0 +1,263 @@
+=====================================================================
+ ComfyforKrita / Krita AI Diffusion — Beta Package
+ Installation & Tester Guide
+=====================================================================
+
+Plugin version: 1.52.1-beta.3
+Based on: Acly/krita-ai-diffusion v1.52.1
+Date: 2026-07-21
+
+This is a modified Krita AI Diffusion plugin for beta testing. Please
+report bugs, confusing UI, and missing docs — thank you!
+
+---------------------------------------------------------------------
+ WHAT'S NEW IN THIS BETA (vs stock 1.52.1)
+---------------------------------------------------------------------
+
+  * Krea 2 image model support (T2I, inpaint, LoRAs, up to 4 refs)
+  * Describe workspace — Florence-2 captions + Clio style library
+    and Qwen-VL "Enhance Description" (image-grounded rewrite)
+  * Augment workspace — up to 10 rectangular region edits
+  * Animate (Wan) workspace — Wan 2.2 T2V / I2V / FLF2V, Extend, Stitch,
+    progress bar, up to 3 Video LoRAs
+  * SeedVR Enhance workspace — SeedVR2 diffusion upscale (separate
+    from the existing ESRGAN Upscale tab)
+  * "Krea 2 Turbo - ER SDE" sampler preset
+  * Progress/result reliability fixes for slow model loads
+  * Windows UTF-8 env for managed ComfyUI (avoids SeedVR emoji crash)
+
+---------------------------------------------------------------------
+ PACKAGE CONTENTS
+---------------------------------------------------------------------
+
+  ai_diffusion\              - plugin (must keep this folder name)
+  ai_diffusion.desktop       - Krita plugin registration
+  tooling-nodes-api.py       - patched tooling-nodes api.py
+  INSTALL-BETA.txt           - this file
+  CHANGELOG-BETA.txt         - short change list for testers
+
+---------------------------------------------------------------------
+ REQUIREMENTS
+---------------------------------------------------------------------
+
+  * Krita 5.2 or newer
+  * ComfyUI (plugin can install a managed server, or use your own)
+  * NVIDIA GPU — 12 GB VRAM recommended for Krea 2 / Wan / SeedVR
+  * git (to clone custom nodes)
+
+---------------------------------------------------------------------
+ STEP 1 — INSTALL THE KRITA PLUGIN
+---------------------------------------------------------------------
+
+BACK UP first if you already use AI Diffusion:
+
+  rename  %APPDATA%\krita\pykrita\ai_diffusion
+       -> %APPDATA%\krita\pykrita\ai_diffusion.bak
+
+Option A — Import ZIP (easiest)
+
+  1. Tools > Scripts > Import Python Plugin from File…
+  2. Select this package zip
+  3. Restart Krita when prompted
+  4. Settings > Configure Krita > Python Plugin Manager
+     → enable "AI Image Diffusion" if needed
+
+Option B — Manual copy
+
+  Copy into:  %APPDATA%\krita\pykrita\
+              (C:\Users\<you>\AppData\Roaming\krita\pykrita\)
+
+    ai_diffusion\           →  pykrita\ai_diffusion\
+    ai_diffusion.desktop    →  pykrita\ai_diffusion.desktop
+
+  Enable the plugin, then restart Krita.
+
+Open the docker: Settings > Dockers > AI Image Diffusion.
+First run: let it install a managed ComfyUI, OR point Connection
+settings at your existing ComfyUI.
+
+Everything below uses paths inside that ComfyUI folder.
+
+---------------------------------------------------------------------
+ STEP 2 — CUSTOM NODES
+---------------------------------------------------------------------
+
+In a terminal:
+
+  cd <your-ComfyUI>\custom_nodes
+
+Required for Krea 2 + Describe:
+
+  git clone https://github.com/kijai/ComfyUI-Florence2.git
+  git clone https://github.com/nova452/ComfyUI-Conditioning-Rebalance.git
+
+Optional but recommended:
+
+  git clone https://github.com/capitan01R/ComfyUI-Krea2T-Enhancer.git
+  git clone https://github.com/1038lab/ComfyUI-QwenVL.git
+      (Enhance Description + Clio styles in Describe)
+
+For Animate (Wan):
+
+  git clone https://github.com/stduhpf/ComfyUI-WanMoeKSampler.git
+  git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git
+
+For SeedVR Enhance:
+
+  git clone https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler.git
+  Then install that pack's requirements into the ComfyUI Python env.
+  On Windows, if the server dies at startup with UnicodeEncodeError,
+  ensure PYTHONUTF8=1 (this beta sets it for managed servers) and/or
+  pin transformers to 4.x:  pip install "transformers>=4.46,<5"
+
+TOOLING-NODES PATCH (strongly recommended):
+
+  The stock comfyui-tooling-nodes pack can freeze for minutes while
+  scanning models on slow disks. Overwrite with the included patch:
+
+    copy tooling-nodes-api.py
+      →  custom_nodes\comfyui-tooling-nodes\api.py
+
+  Re-apply after updating tooling-nodes.
+
+Restart ComfyUI / Krita after installing nodes.
+
+---------------------------------------------------------------------
+ STEP 3 — MODELS (download what you need)
+---------------------------------------------------------------------
+
+Click the URLs below (Hugging Face “Download” / resolve links).
+Put each file in the folder shown relative to your ComfyUI root.
+
+--- Krea 2 (Generate / Augment / refs) ---
+  Repo: https://huggingface.co/Comfy-Org/Krea-2
+
+  → models\diffusion_models\
+    12GB (nvfp4):
+      https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_nvfp4.safetensors
+    16GB+ (fp8):
+      https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_fp8_scaled.safetensors
+
+  → models\text_encoders\
+    https://huggingface.co/Comfy-Org/Krea-2/resolve/main/text_encoders/qwen3vl_4b_fp8_scaled.safetensors
+
+  → models\vae\
+    https://huggingface.co/Comfy-Org/Krea-2/resolve/main/vae/qwen_image_vae.safetensors
+
+--- Florence-2 (Describe captions) ---
+  Download the whole repo folder:
+    https://huggingface.co/MiaoshouAI/Florence-2-large-PromptGen-v2.0
+  → models\LLM\Florence-2-large-PromptGen-v2.0\
+    (must include model.safetensors, config.json, etc.)
+
+--- Wan 2.2 shared TE + VAE (T2V / I2V / FLF2V — once) ---
+  → models\text_encoders\
+    https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
+
+  → models\vae\
+    https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors
+
+--- Wan 2.2 T2V (Animate → Text → Video) ---
+  Repo: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged
+  Overview: https://comfyanonymous.github.io/ComfyUI_examples/wan22/
+
+  → models\diffusion_models\  (~14 GB each)
+    https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors
+    https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors
+
+  Optional 4-step LoRAs → models\loras\  (add both in Animate Video LoRAs @ 1.0)
+    https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors
+    https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors
+
+--- Wan 2.2 I2V / FLF2V (Animate → Image → Video / Start-End) ---
+  Recommended for 12GB: distilled 4-step (lightx2v) → models\diffusion_models\
+  Repo: https://huggingface.co/lightx2v/Wan2.2-Distill-Models
+    https://huggingface.co/lightx2v/Wan2.2-Distill-Models/resolve/main/wan2.2_i2v_A14b_high_noise_scaled_fp8_e4m3_lightx2v_4step_comfyui.safetensors
+    https://huggingface.co/lightx2v/Wan2.2-Distill-Models/resolve/main/wan2.2_i2v_A14b_low_noise_scaled_fp8_e4m3_lightx2v_4step_comfyui.safetensors
+  (A “_1030” high-noise variant is also fine if that is what you already have.)
+
+  Official Comfy fp8 pair (non-distilled; slower, often needs more steps):
+    https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+    https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+
+  Do not mix I2V and T2V UNETs in the same run — pick Mode first; the
+  plugin prefers the matching family when both are installed.
+
+--- SeedVR2 (SeedVR Enhance workspace) ---
+  Nodes: https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler
+  DiT/VAE weights usually auto-download on first Enhance into the
+  SeedVR2 node model folder. Use the 12GB / Quality / Low VRAM presets.
+
+TIP: external drives via ComfyUI\extra_model_paths.yaml:
+
+  my_models:
+    diffusion_models: X:\models\diffusion_models\
+    text_encoders: X:\models\text_encoders\
+    vae: X:\models\vae\
+    LLM: X:\models\LLM\
+    loras: X:\models\loras\
+
+---------------------------------------------------------------------
+ STEP 4 — QUICK START BY WORKSPACE
+---------------------------------------------------------------------
+
+Generate (Krea 2)
+  Style settings → new style → krea2_turbo_nvfp4
+  Sampler preset: "Krea 2 Turbo - ER SDE" (8 steps, CFG 1.0)
+  First run after server start is slow (encoder load); then faster.
+
+Describe
+  Detail level → Generate Description
+  Optional: pick a Clio style, write a draft, Enhance Description
+  "Use as prompt" sends text to Generate
+
+Augment
+  Select regions with Krita’s rectangular selection → Add region
+  Per-region prompts + optional scene prompt → Generate
+
+Animate (Wan)
+  T2V = prompt only (needs wan2.2_t2v_*). I2V from current layer, or FLF2V first/last.
+  Extend = continue from last frame; Stitch = FLF2V toward End frame
+  Results land in the .kra Timeline (not an MP4). Export via
+  File → Render Animation when you need a video file.
+  Up to 3 Video LoRAs in the panel
+
+SeedVR Enhance
+  Separate from Upscale (ESRGAN). Pick preset, target size, Enhance.
+  Needs SeedVR2 nodes; first run may download weights.
+
+---------------------------------------------------------------------
+ FEEDBACK FOR BETA
+---------------------------------------------------------------------
+
+Please send:
+
+  * What you tried (workspace + approximate settings)
+  * Expected vs actual result
+  * GPU / VRAM / Krita version / Windows build
+  * Relevant log snippets from:
+      %APPDATA%\krita\ai_diffusion\logs\client.log
+      %APPDATA%\krita\ai_diffusion\logs\server.log
+
+Known rough edges to watch:
+
+  * First Krea / Wan / SeedVR run can look “stuck” while weights load
+  * Stitch ≠ Extend (different behaviors)
+  * SeedVR is image enhance only in this beta (not video batch)
+  * Clio Enhance needs ComfyUI-QwenVL; captions still work with Florence-2 alone
+
+---------------------------------------------------------------------
+ TROUBLESHOOTING
+---------------------------------------------------------------------
+
+  * Plugin missing after install: confirm folder is named ai_diffusion
+    and ai_diffusion.desktop is next to it; enable in Plugin Manager
+  * "Could not find websockets": you installed source without vendored
+    deps — use this zip, not a raw git checkout
+  * Hang / lost results: apply tooling-nodes patch (step 2)
+  * No caption model: Florence-2 folder under models\LLM + restart
+  * QwenVL / SeedVR / Wan nodes missing: clone packs, restart server
+  * SeedVR UnicodeEncodeError on Windows: UTF-8 env + avoid emoji
+    prints; pin transformers < 5 if diffusers breaks
+
+Have fun — and thank you for testing.

@@ -109,5 +109,12 @@
         "steps": 20,
         "minimum_steps": 3,
         "cfg": 5.0
+    },
+    "Krea 2 Turbo - ER SDE": {
+        "sampler": "er_sde",
+        "scheduler": "simple",
+        "steps": 8,
+        "minimum_steps": 3,
+        "cfg": 1.0
     }
 }

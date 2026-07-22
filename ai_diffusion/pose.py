@@ -1,3 +1,4 @@
+import math
 import operator
 from functools import reduce
 from typing import NamedTuple
@@ -140,6 +141,18 @@ def get_connected_bones(joint_id: int):
     return [i for i, (a, b) in enumerate(bone_connection) if joint_id in (a, b)]
 
 
+def _angle_deg(a: Point, b: Point, c: Point) -> float:
+    """Interior angle at point b formed by points a-b-c, in degrees."""
+    v1 = Point(a.x - b.x, a.y - b.y)
+    v2 = Point(c.x - b.x, c.y - b.y)
+    n1 = math.hypot(v1.x, v1.y)
+    n2 = math.hypot(v2.x, v2.y)
+    if n1 < 1e-6 or n2 < 1e-6:
+        return 180.0
+    cos = max(-1.0, min(1.0, (v1.x * v2.x + v1.y * v2.y) / (n1 * n2)))
+    return math.degrees(math.acos(cos))
+
+
 class Shape:
     def __init__(self, name: str, position: Point):
         self._name = name
@@ -206,6 +219,195 @@ class Pose:
         people = pose.get("people", [])
         poses = (parse_keypoints(i, p.get("pose_keypoints_2d", [])) for i, p in enumerate(people))
         return Pose(extent, len(people), reduce(operator.ior, poses, {}))
+
+    @staticmethod
+    def from_vector_shapes(extent: Extent, shapes, resolution: float = 1.0):
+        """Rebuild a Pose from Krita vector shapes that use Pxx_Jyy / Pxx_Byy ids."""
+        pose = Pose(extent)
+        radius = pose._radius
+        for shape in shapes:
+            name = shape.name() if callable(getattr(shape, "name", None)) else getattr(shape, "name", "")
+            if callable(name):
+                name = name()
+            index = parse_id(str(name))
+            if not isinstance(index, JointIndex):
+                continue
+            pos = shape.position()
+            # Joint circles are drawn with the center offset by the radius (see to_svg).
+            center = (pos + QPointF(radius, radius)) * resolution
+            pose.joints[index] = Point.from_qt(center)
+            pose.people_count = max(pose.people_count, index.person + 1)
+        return pose
+
+    def joint(self, person: int, part: int) -> Point | None:
+        return self.joints.get(JointIndex(person, part))
+
+    def describe(self) -> str:
+        """Natural-language pose description for text-conditioned models (e.g. Krea 2)."""
+        people = sorted({idx.person for idx in self.joints})
+        if not people:
+            return ""
+        descriptions = [self._describe_person(p) for p in people]
+        descriptions = [d for d in descriptions if d]
+        if not descriptions:
+            return ""
+        if len(descriptions) == 1:
+            return (
+                "The subject is posed as follows (do not draw any skeleton or stick figure): "
+                + descriptions[0]
+            )
+        joined = "; ".join(f"person {i + 1}: {d}" for i, d in enumerate(descriptions))
+        return (
+            "The subjects are posed as follows (do not draw any skeleton or stick figure): "
+            + joined
+        )
+
+    def _describe_person(self, person: int) -> str:
+        nose = self.joint(person, 0)
+        neck = self.joint(person, 1)
+        r_sh = self.joint(person, 2)
+        r_el = self.joint(person, 3)
+        r_wr = self.joint(person, 4)
+        l_sh = self.joint(person, 5)
+        l_el = self.joint(person, 6)
+        l_wr = self.joint(person, 7)
+        r_hip = self.joint(person, 8)
+        r_knee = self.joint(person, 9)
+        r_ankle = self.joint(person, 10)
+        l_hip = self.joint(person, 11)
+        l_knee = self.joint(person, 12)
+        l_ankle = self.joint(person, 13)
+
+        parts: list[str] = []
+
+        # Orientation / facing from shoulders relative to neck (image x grows right).
+        if neck and r_sh and l_sh:
+            mid_sh_x = (r_sh.x + l_sh.x) / 2
+            shoulder_width = abs(l_sh.x - r_sh.x)
+            # Person's right shoulder is joint 2; if it's on the left of the image, they face us.
+            if shoulder_width < max(8.0, self.extent.width * 0.04):
+                parts.append("turned in profile / side view")
+            elif r_sh.x < l_sh.x:
+                if nose and abs(nose.x - mid_sh_x) > shoulder_width * 0.15:
+                    parts.append(
+                        "facing slightly to their "
+                        + ("left" if nose.x > mid_sh_x else "right")
+                    )
+                else:
+                    parts.append("facing toward the viewer")
+            else:
+                parts.append("facing away from the viewer")
+
+        stance = self._leg_stance(r_hip, r_knee, r_ankle, l_hip, l_knee, l_ankle)
+        if stance:
+            parts.append(stance)
+
+        arm = self._arm_phrase("right", r_sh, r_el, r_wr)
+        if arm:
+            parts.append(arm)
+        arm = self._arm_phrase("left", l_sh, l_el, l_wr)
+        if arm:
+            parts.append(arm)
+
+        if neck and r_hip and l_hip:
+            hip_y = (r_hip.y + l_hip.y) / 2
+            torso = hip_y - neck.y
+            if torso > 0 and abs(r_hip.x - l_hip.x) > 1:
+                lean = ((r_hip.x + l_hip.x) / 2 - neck.x) / torso
+                if lean > 0.18:
+                    parts.append("torso leaning to their left")
+                elif lean < -0.18:
+                    parts.append("torso leaning to their right")
+
+        if not parts:
+            return "in a full-body pose matching the reference skeleton"
+        return ", ".join(parts)
+
+    def _leg_stance(
+        self,
+        r_hip: Point | None,
+        r_knee: Point | None,
+        r_ankle: Point | None,
+        l_hip: Point | None,
+        l_knee: Point | None,
+        l_ankle: Point | None,
+    ) -> str:
+        def leg_bend(hip, knee, ankle) -> float | None:
+            if not (hip and knee and ankle):
+                return None
+            # Angle at knee; ~180° straight, smaller when bent. y grows downward.
+            return _angle_deg(hip, knee, ankle)
+
+        r_bend = leg_bend(r_hip, r_knee, r_ankle)
+        l_bend = leg_bend(l_hip, l_knee, l_ankle)
+        hips = [p for p in (r_hip, l_hip) if p]
+        ankles = [p for p in (r_ankle, l_ankle) if p]
+        knees = [p for p in (r_knee, l_knee) if p]
+        if not hips:
+            return ""
+
+        # Sitting / crouching: knees near hip height and ankles not far below.
+        if hips and knees:
+            avg_hip_y = sum(p.y for p in hips) / len(hips)
+            avg_knee_y = sum(p.y for p in knees) / len(knees)
+            body_scale = self.extent.height * 0.08
+            if avg_knee_y - avg_hip_y < body_scale * 1.2:
+                if ankles and (sum(p.y for p in ankles) / len(ankles) - avg_knee_y) < body_scale * 1.5:
+                    return "sitting or crouching"
+                return "kneeling or squatting"
+
+        # Standing variants
+        if r_bend is not None and l_bend is not None:
+            if r_bend < 140 and l_bend >= 155:
+                return "standing with the right leg bent"
+            if l_bend < 140 and r_bend >= 155:
+                return "standing with the left leg bent"
+            if r_bend < 140 and l_bend < 140:
+                return "standing with both knees bent"
+        if r_ankle and l_ankle and r_hip and l_hip:
+            stance_width = abs(r_ankle.x - l_ankle.x)
+            hip_width = max(abs(r_hip.x - l_hip.x), 1.0)
+            if stance_width > hip_width * 2.2:
+                return "standing with feet wide apart"
+            if stance_width < hip_width * 0.7:
+                return "standing with feet close together"
+        return "standing"
+
+    def _arm_phrase(
+        self, side: str, shoulder: Point | None, elbow: Point | None, wrist: Point | None
+    ) -> str:
+        if not shoulder or not wrist:
+            return ""
+        dx = wrist.x - shoulder.x
+        dy = wrist.y - shoulder.y  # positive = down
+        dist = math.hypot(dx, dy)
+        scale = max(self.extent.shortest_side * 0.05, 1.0)
+
+        # Raised above shoulder
+        if dy < -scale * 1.5:
+            if abs(dx) < scale:
+                return f"{side} arm raised straight up"
+            return f"{side} arm raised"
+        # Hands near hips / on waist
+        if abs(dy) < scale * 2 and abs(dx) < scale * 2.5:
+            return f"{side} hand near the hip"
+        # Extended out to the side
+        if abs(dy) < scale * 1.5 and abs(dx) > scale * 2:
+            return f"{side} arm extended out to the side"
+        # Forward / reaching (hard in 2D; treat moderate outward+down as hanging)
+        if dy > scale * 1.5:
+            if elbow:
+                bend = _angle_deg(shoulder, elbow, wrist)
+                if bend is not None and bend < 130:
+                    return f"{side} arm bent at the elbow"
+            return f"{side} arm hanging down"
+        if elbow:
+            bend = _angle_deg(shoulder, elbow, wrist)
+            if bend is not None and bend < 130:
+                return f"{side} arm bent"
+        if dist < scale:
+            return ""
+        return f"{side} arm held out"
 
     def scale(self, target: Extent):
         s = Point(target.width / self.extent.width, target.height / self.extent.height)

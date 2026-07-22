@@ -36,6 +36,15 @@ def compute_bounds(extent: Extent, mask_bounds: Bounds | None, op: WorkflowKind)
         return Bounds(0, 0, *extent)
 
 
+def compute_augment_context_bounds(extent: Extent, mask_bounds: Bounds) -> Bounds:
+    """Padded crop around an augment region (same idea as full-strength inpaint context)."""
+    context_padding = max(extent.longest_side // 16, mask_bounds.extent.average_side // 2)
+    image_bounds = Bounds.pad(
+        mask_bounds, context_padding, min_size=512, multiple=8, square=False
+    )
+    return Bounds.clamp(image_bounds, extent)
+
+
 def compute_relative_bounds(image_bounds: Bounds, mask_bounds: Bounds):
     """Transforms bounds for mask to use offsets relative to the context area.
 

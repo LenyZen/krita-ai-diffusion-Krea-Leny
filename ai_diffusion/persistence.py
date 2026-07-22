@@ -150,6 +150,12 @@ class ModelSync:
         state["upscale"] = _serialize(model.upscale)
         state["live"] = _serialize(model.live)
         state["animation"] = _serialize(model.animation)
+        state["describe"] = _serialize(model.describe)
+        state["augment"] = _serialize_augment(model.augment)
+        state["vector_cnc"] = _serialize(model.vector_cnc)
+        state["comic"] = _serialize_comic(model.comic)
+        state["animate"] = _serialize_animate(model.animate)
+        state["seedvr"] = _serialize(model.seedvr)
         state["custom"] = _serialize_custom(model.custom)
         state["history"] = [asdict(h) for h in self._history]
         state["root"] = _serialize(model.regions)
@@ -171,6 +177,12 @@ class ModelSync:
         _deserialize(model.upscale, state.get("upscale", {}))
         _deserialize(model.live, state.get("live", {}))
         _deserialize(model.animation, state.get("animation", {}))
+        _deserialize(model.describe, state.get("describe", {}))
+        _deserialize_augment(model.augment, state.get("augment", {}))
+        _deserialize(model.vector_cnc, state.get("vector_cnc", {}))
+        _deserialize_comic(model.comic, state.get("comic", {}))
+        _deserialize_animate(model.animate, state.get("animate", {}))
+        _deserialize(model.seedvr, state.get("seedvr", {}))
         _deserialize_custom(model.custom, state.get("custom", {}), model.name)
         _deserialize(model.regions, state.get("root", {}))
         _deserialize(model.edit_regions, state.get("edit", {}))
@@ -200,6 +212,12 @@ class ModelSync:
         model.upscale.modified.connect(self._save_later)
         model.live.modified.connect(self._save_later)
         model.animation.modified.connect(self._save_later)
+        model.describe.modified.connect(self._save_later)
+        model.augment.modified.connect(self._save_later)
+        model.vector_cnc.modified.connect(self._save_later)
+        model.comic.modified.connect(self._save_later)
+        model.animate.modified.connect(self._save_later)
+        model.seedvr.modified.connect(self._save_later)
         model.custom.modified.connect(self._save_later)
         model.jobs.job_finished.connect(self._save_results)
         model.jobs.job_discarded.connect(self._remove_results)
@@ -232,7 +250,14 @@ class ModelSync:
             self._track_region(region)
 
     def _save_results(self, job: Job):
-        if job.kind in [JobKind.diffusion, JobKind.animation] and len(job.results) > 0:
+        if job.kind is JobKind.comic and not job.params.metadata.get("comic_slots"):
+            return  # wait for composited page
+        if job.kind in [
+            JobKind.diffusion,
+            JobKind.animation,
+            JobKind.augment,
+            JobKind.comic,
+        ] and len(job.results) > 0:
             slot = self._slot_index
             self._slot_index += 1
             self._image_task = eventloop.run(self._save_result_images(job, slot, self._image_task))
@@ -317,6 +342,80 @@ def _deserialize(obj: QObject, data: dict[str, Any]):
         data["unblur_strength"] = 0.5
 
     return deserialize(obj, data, converter)
+
+
+def _serialize_augment(augment):
+    result = _serialize(augment)
+    result["regions"] = [r.to_dict() for r in augment.regions]
+    return result
+
+
+def _deserialize_augment(augment, data: dict[str, Any]):
+    regions = data.pop("regions", [])
+    _deserialize(augment, data)
+    augment.load_regions(regions)
+    augment.update_overlay()
+
+
+def _serialize_animate(animate):
+    result = _serialize(animate)
+    result["loras"] = [l.to_dict() for l in animate.loras]
+    return result
+
+
+def _deserialize_animate(animate, data: dict[str, Any]):
+    loras = data.pop("loras", None)
+    _deserialize(animate, data)
+    if loras is not None:
+        animate.load_loras(loras)
+
+
+def _serialize_comic(comic):
+    result = _serialize(comic)
+    result["panels"] = [p.to_dict() for p in comic.panels]
+    result["characters"] = [c.to_dict() for c in comic.characters]
+    result["scenes"] = [s.to_dict() for s in comic.scenes]
+    result["page_loras"] = [l.to_dict() for l in comic.page_loras]
+    result["working_group_id"] = getattr(comic, "_working_group_id", "") or ""
+    # Drop legacy single-character face field if present on older saves
+    result.pop("character_layer_id", None)
+    return result
+
+
+def _deserialize_comic(comic, data: dict[str, Any]):
+    panels = data.pop("panels", None)
+    characters = data.pop("characters", None)
+    scenes = data.pop("scenes", None)
+    page_loras = data.pop("page_loras", None)
+    legacy_face = data.pop("character_layer_id", None)
+    working_group_id = data.pop("working_group_id", "")
+    _deserialize(comic, data)
+    if working_group_id:
+        comic._working_group_id = working_group_id
+    if scenes is not None:
+        comic.load_scenes(scenes)
+    if panels is not None:
+        comic.load_panels(panels)
+    if characters is not None:
+        comic.load_characters(characters)
+    elif legacy_face:
+        # Migrate old single Face dropdown into one character sheet
+        import uuid as _uuid
+
+        comic.load_characters(
+            [
+                {
+                    "id": str(_uuid.uuid4()),
+                    "name": "Character 1",
+                    "synopsis": "",
+                    "face_layer_id": legacy_face,
+                    "lora_name": "",
+                    "lora_strength": 1.0,
+                }
+            ]
+        )
+    if page_loras is not None:
+        comic.load_page_loras(page_loras)
 
 
 def _serialize_custom(custom: CustomWorkspace):

@@ -13,7 +13,8 @@ from ..backend.resources import Arch, ControlMode, ResourceKind, resource_id
 from ..image import Bounds, Extent, Image
 from ..layer import Layer, LayerType
 from ..localization import translate as _
-from ..util import PluginError
+from ..pose import Pose
+from ..util import PluginError, acquire_elements
 from ..util import client_logger as log
 from . import jobs, model
 from .properties import ObservableProperties, Property
@@ -120,6 +121,14 @@ class ControlLayer(QObject, ObservableProperties):
             raise PluginError(f"Can't use '{layer.name}' as control layer: {self.error_text}")
 
         extent = bounds.extent if bounds else self._model.document.extent
+        strength = self.strength / self.strength_multiplier
+
+        # Krea 2: pose stick figures must not go to the vision encoder (it paints them
+        # into the image). Convert OpenPose keypoints to text guidance instead.
+        if self.mode is ControlMode.pose and self._model.arch is Arch.krea2:
+            pose_text = self._pose_text_for_layer(layer, extent)
+            return ControlInput(self.mode, None, strength, (self.start, self.end), pose_text)
+
         if self.mode.is_ip_adapter and not layer.bounds.is_zero:
             bounds = None  # ignore mask bounds, use layer bounds
 
@@ -128,16 +137,38 @@ class ControlLayer(QObject, ObservableProperties):
         if self.mode.is_lines or self.mode is ControlMode.stencil:
             image.make_opaque(background=Qt.GlobalColor.white)
 
-        if self.mode.is_ip_adapter:
-            if self._model.arch.supports_edit:
+        # IP-Adapter refs and Krea 2 vision-guided structural modes (scribble/…)
+        # are fed to a vision encoder — keep them at a sensible size.
+        vision_guided = self.mode.is_ip_adapter or (
+            self._model.arch is Arch.krea2
+            and self.mode.can_substitute_instruction(self._model.arch)
+        )
+        if vision_guided:
+            if self._model.arch.supports_edit or self._model.arch is Arch.krea2:
                 if image.extent.height > extent.height:
                     w = (image.extent.width * extent.height) // image.extent.height
                     image = Image.scale(image, Extent(w, extent.height))
             else:
                 image = Image.scale(image, self.clip_vision_extent)
 
-        strength = self.strength / self.strength_multiplier
         return ControlInput(self.mode, image, strength, (self.start, self.end))
+
+    def _pose_text_for_layer(self, layer: Layer, extent: Extent) -> str:
+        fallback = (
+            "Pose the subject in a clear full-body stance matching the intended body"
+            " position. Do not draw any skeleton, stick figure, or colored pose lines."
+        )
+        if layer.type is not LayerType.vector:
+            return fallback
+        try:
+            shapes = acquire_elements(layer.node.shapes())
+            resolution = getattr(self._model.document, "resolution", 1.0) or 1.0
+            pose = Pose.from_vector_shapes(extent, shapes, resolution)
+            text = pose.describe()
+            return text or fallback
+        except Exception as e:
+            log.warning(f"Failed to describe pose from layer '{layer.name}': {e}")
+            return fallback
 
     def generate(self):
         self._generate_job = self._model.generate_control_layer(self)
@@ -162,6 +193,16 @@ class ControlLayer(QObject, ObservableProperties):
 
             if self.mode.is_ip_adapter and models.arch.supports_edit:
                 is_supported = True  # Reference images are merged into the conditioning context
+            elif self.mode.is_ip_adapter and models.arch is Arch.krea2:
+                # Reference images are fed to the Qwen3-VL text encoder (needs custom node)
+                if self.mode is ControlMode.composition:
+                    self.error_text = _("Not supported for") + f" {models.arch.value}"
+                    is_supported = False
+                elif "Krea2EncodeRebalance" not in client.models.node_inputs:
+                    self.error_text = _(
+                        "The server is missing the 'ComfyUI-Conditioning-Rebalance' node package"
+                    )
+                    is_supported = False
             elif self.mode.is_ip_adapter and models.ip_adapter.find(self.mode) is None:
                 search_path = resources.search_path(ResourceKind.ip_adapter, models.arch, self.mode)
                 if search_path:
@@ -177,6 +218,19 @@ class ControlLayer(QObject, ObservableProperties):
                 is_supported = self.mode.can_substitute_instruction(models.arch)
                 if not is_supported:
                     self.error_text = _("Not supported for") + f" {models.arch.value}"
+            elif (
+                self.mode.is_control_net
+                and models.arch is Arch.krea2
+                and self.mode.can_substitute_instruction(models.arch)
+            ):
+                # Pose/scribble/etc. use Qwen3-VL vision guidance (no ControlNet for Krea 2).
+                if "Krea2EncodeRebalance" not in client.models.node_inputs:
+                    self.error_text = _(
+                        "The server is missing the 'ComfyUI-Conditioning-Rebalance' node package"
+                    )
+                    is_supported = False
+                else:
+                    is_supported = True
             elif self.mode.is_control_net:
                 model = models.find_control(self.mode)
                 self.has_range = model == models.control.find(self.mode, True)

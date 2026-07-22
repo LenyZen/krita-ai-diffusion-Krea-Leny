@@ -1,0 +1,12 @@
+Clio Style Library (styles in clio_styles.json)
+==============================================
+
+Vendored from:
+  https://github.com/lumenastrum/clio-style-preview
+
+License:
+  - Repository code: MIT
+  - Style description text: community-shared prompt prose, originally compiled
+    as a wildcard set by u/Dear-Spend-2865; credited by the upstream project.
+
+Used here as optional art-style lenses in the Describe workspace (Qwen-VL).

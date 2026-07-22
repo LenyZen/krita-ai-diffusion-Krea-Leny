@@ -501,6 +501,9 @@ class Server:
                 args += ["--port", str(port)]
             if self.backend is not ServerBackend.cpu:
                 env["ONEDNN_MAX_CPU_ISA"] = "AVX2"  # workaround for #401
+            # Avoid Windows cp1252 crashes when custom nodes print emoji/unicode (e.g. SeedVR2)
+            env["PYTHONUTF8"] = "1"
+            env["PYTHONIOENCODING"] = "utf-8"
 
             log.info(f"Starting server with python {' '.join(args)}")
             self._process = await create_process(

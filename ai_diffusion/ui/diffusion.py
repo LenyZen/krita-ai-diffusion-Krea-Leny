@@ -4,12 +4,13 @@ import asyncio
 
 import krita
 from krita import DockWidget, Krita
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QSize, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -27,9 +28,31 @@ from ..settings import ServerMode, settings
 from . import theme
 from .animation import AnimationWidget
 from .custom_workflow import CustomWorkflowPlaceholder, CustomWorkflowWidget
+from .describe import DescribeWidget
+from .augment import AugmentWidget
+from .vector_cnc import VectorCncWidget
+from .animate import AnimateWidget
+from .comic import ComicWidget
 from .generation import GenerationWidget
 from .live import LiveWidget
+from .seedvr import SeedVRWidget
 from .upscale import UpscaleWidget
+
+
+class _WorkspaceStack(QStackedWidget):
+    """Size to the *current* page only — otherwise Comic/Animate force a fat docker."""
+
+    def sizeHint(self) -> QSize:
+        w = self.currentWidget()
+        return w.sizeHint() if w is not None else super().sizeHint()
+
+    def minimumSizeHint(self) -> QSize:
+        w = self.currentWidget()
+        if w is None:
+            return super().minimumSizeHint()
+        hint = w.minimumSizeHint()
+        # Keep a usable but slim dock; ignore huge combo sizeHints from long model names
+        return QSize(min(hint.width(), 220), hint.height())
 
 
 class AutoUpdateWidget(QWidget):
@@ -287,7 +310,14 @@ class ImageDiffusionWidget(DockWidget):
         self._live = LiveWidget()
         self._custom = CustomWorkflowWidget()
         self._custom_placeholder = CustomWorkflowPlaceholder()
-        self._frame = QStackedWidget(self)
+        self._describe = DescribeWidget()
+        self._augment = AugmentWidget()
+        self._vector_cnc = VectorCncWidget()
+        self._comic = ComicWidget()
+        self._animate = AnimateWidget()
+        self._seedvr = SeedVRWidget()
+        self._frame = _WorkspaceStack(self)
+        self._frame.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         self._frame.addWidget(self._welcome)
         self._frame.addWidget(self._generation)
         self._frame.addWidget(self._upscaling)
@@ -295,7 +325,15 @@ class ImageDiffusionWidget(DockWidget):
         self._frame.addWidget(self._animation)
         self._frame.addWidget(self._custom)
         self._frame.addWidget(self._custom_placeholder)
+        self._frame.addWidget(self._describe)
+        self._frame.addWidget(self._augment)
+        self._frame.addWidget(self._vector_cnc)
+        self._frame.addWidget(self._comic)
+        self._frame.addWidget(self._animate)
+        self._frame.addWidget(self._seedvr)
         self.setWidget(self._frame)
+        # Allow the dock to shrink; stacked pages must not dictate a huge min width
+        self.setMinimumWidth(180)
 
         self._welcome.accepted.connect(self.update_content)
         root.connection.state_changed.connect(self.update_content)
@@ -342,3 +380,24 @@ class ImageDiffusionWidget(DockWidget):
         elif model.workspace is Workspace.custom:
             self._custom.model = model
             self._frame.setCurrentWidget(self._custom)
+        elif model.workspace is Workspace.describe:
+            self._describe.model = model
+            self._frame.setCurrentWidget(self._describe)
+        elif model.workspace is Workspace.augment:
+            self._augment.model = model
+            self._frame.setCurrentWidget(self._augment)
+        elif model.workspace is Workspace.vector_cnc:
+            self._vector_cnc.model = model
+            self._frame.setCurrentWidget(self._vector_cnc)
+        elif model.workspace is Workspace.comic:
+            self._comic.model = model
+            self._frame.setCurrentWidget(self._comic)
+        elif model.workspace is Workspace.animate:
+            self._animate.model = model
+            self._frame.setCurrentWidget(self._animate)
+        elif model.workspace is Workspace.seedvr:
+            self._seedvr.model = model
+            self._frame.setCurrentWidget(self._seedvr)
+        # Recompute dock size constraints when the page changes
+        self._frame.updateGeometry()
+        self.updateGeometry()

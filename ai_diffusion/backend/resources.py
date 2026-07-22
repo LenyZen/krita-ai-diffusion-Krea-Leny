@@ -99,6 +99,7 @@ class Arch(Enum):
     zimage = "Z-Image"
     ernie = "ERNIE Image"
     krea2 = "Krea 2"
+    wan22 = "Wan 2.2"
 
     auto = "Automatic"
     all = "All"
@@ -145,6 +146,15 @@ class Arch(Enum):
             return Arch.ernie
         if string == "krea2":
             return Arch.krea2
+        if string in {"wan", "wan2", "wan2.1", "wan2.2", "wan21", "wan22", "wan_2.1", "wan_2.2"}:
+            return Arch.wan22
+        if filename and (
+            "wan2.2" in filename
+            or "wan2_2" in filename
+            or "wan22" in filename
+            or ("wan" in filename and ("i2v" in filename or "flf2v" in filename))
+        ):
+            return Arch.wan22
         return None
 
     @staticmethod
@@ -254,6 +264,8 @@ class Arch(Enum):
                 return ["ministral"]
             case Arch.krea2:
                 return ["qwen_3vl_4b"]
+            case Arch.wan22:
+                return ["umt5"]
         raise ValueError(f"Unsupported architecture: {self}")
 
     @staticmethod
@@ -277,6 +289,7 @@ class Arch(Enum):
             Arch.zimage,
             Arch.ernie,
             Arch.krea2,
+            Arch.wan22,
         ]
 
 
@@ -425,6 +438,16 @@ class ControlMode(Enum):
                 ControlMode.style,
                 ControlMode.composition,
                 ControlMode.face,
+                ControlMode.scribble,
+                ControlMode.line_art,
+                ControlMode.canny_edge,
+                ControlMode.depth,
+                ControlMode.pose,
+            ]
+        # Krea 2 has no ControlNets; structural modes are fed as vision references
+        # through the Qwen3-VL text encoder with a guiding instruction (same path as Face).
+        if arch is Arch.krea2:
+            return self in [
                 ControlMode.scribble,
                 ControlMode.line_art,
                 ControlMode.canny_edge,
@@ -825,6 +848,12 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3_06b"): ["qwen_3_06b", "qwen3-06b", "qwen3_06b"],
     resource_id(ResourceKind.text_encoder, Arch.all, "ministral"): ["ministral-3-3b", "ministral"],
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3vl_4b"): ["qwen3vl_4b", "qwen_3vl_4b", "qwen3-vl-4b"],
+    resource_id(ResourceKind.text_encoder, Arch.all, "umt5"): [
+        "umt5_xxl_fp8_e4m3fn_scaled",
+        "umt5_xxl_fp8_e4m3fn",
+        "umt5_xxl",
+        "umt5",
+    ],
     resource_id(ResourceKind.vae, Arch.sd15, "default"): ["vae-ft-mse-840000-ema"],
     resource_id(ResourceKind.vae, Arch.sdxl, "default"): ["sdxl_vae"],
     resource_id(ResourceKind.vae, Arch.illu, "default"): ["sdxl_vae"],
@@ -843,6 +872,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.vae, Arch.zimage, "default"): ["z-image", "flux-", "flux_", "flux/", "flux1", "ae.s"],
     resource_id(ResourceKind.vae, Arch.ernie, "default"): ["flux2"],
     resource_id(ResourceKind.vae, Arch.krea2, "default"): ["qwen_image"],
+    resource_id(ResourceKind.vae, Arch.wan22, "default"): ["wan_2.1_vae", "wan2.1_vae", "wan_vae", "wan"],
 }
 # fmt: on
 

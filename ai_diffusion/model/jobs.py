@@ -33,6 +33,9 @@ class JobKind(Enum):
     animation_batch = 4  # single frame as part of an animation batch
     animation_frame = 5  # just a single frame
     animation = 6  # full animation in one job
+    describe = 7  # generate a text description of an image
+    augment = 8  # re-render image with spatial region descriptions
+    comic = 9  # comic page: sequential panel generation + composite
 
 
 @dataclass
@@ -191,7 +194,7 @@ class JobQueue(QObject):
 
     def set_results(self, job: Job, results: ImageCollection):
         job.results = results
-        if job.kind in [JobKind.diffusion, JobKind.animation]:
+        if job.kind in [JobKind.diffusion, JobKind.animation, JobKind.augment, JobKind.comic]:
             self._memory_usage += results.size / (1024**2)
             self.prune(keep=job)
 
@@ -206,7 +209,7 @@ class JobQueue(QObject):
         self._cancel_earlier_jobs(job)
         self.count_changed.emit()
 
-        if job.kind not in [JobKind.diffusion, JobKind.animation]:
+        if job.kind not in [JobKind.diffusion, JobKind.animation, JobKind.augment, JobKind.comic]:
             self.remove(job)
 
     def notify_cancelled(self, job: Job):
@@ -253,7 +256,9 @@ class JobQueue(QObject):
         jobs_to_discard = [
             job
             for job in self._entries
-            if job.kind in (JobKind.diffusion, JobKind.animation) and job.state is JobState.finished
+            if job.kind
+            in (JobKind.diffusion, JobKind.animation, JobKind.augment, JobKind.comic)
+            and job.state is JobState.finished
         ]
         for job in jobs_to_discard:
             self._discard_job(job)

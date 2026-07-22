@@ -18,7 +18,7 @@ from ..text import (
     replace_layers,
     strip_prompt_comments,
 )
-from ..util import ensure, median_or_zero, unique
+from ..util import clamp, ensure, median_or_zero, unique
 from . import resolution, resources
 from .api import (
     CheckpointInput,
@@ -26,6 +26,7 @@ from .api import (
     ControlInput,
     CustomStyleInput,
     CustomWorkflowInput,
+    DescribeInput,
     ExtentInput,
     FillMode,
     ImageInput,
@@ -34,7 +35,10 @@ from .api import (
     LoraInput,
     RegionInput,
     SamplingInput,
+    SeedVRInput,
     UpscaleInput,
+    WanVideoInput,
+    WanVideoMode,
     WorkflowInput,
     WorkflowKind,
 )
@@ -76,6 +80,41 @@ def sampling_from_style(style: Style, strength: float, is_live: bool):
     if strength < 1.0:
         result.total_steps, result.start_step = apply_strength(strength, max_steps, min_steps)
     return result
+
+
+def sampling_for_krea2_augment(style: Style, strength: float):
+    """Krea 2 augment needs enough denoise steps for vision-conditioned edits to take hold."""
+    sampler_name = style.sampler
+    cfg = style.cfg_scale
+    _, max_steps = style.get_steps(is_live=False)
+    max_steps = max(max_steps, 16)
+    preset = SamplerPresets.instance()[sampler_name]
+    min_denoise = 6
+    total, start = apply_strength(strength, max_steps, min_steps=min_denoise)
+    return SamplingInput(
+        sampler=preset.sampler,
+        scheduler=preset.scheduler,
+        cfg_scale=cfg or preset.cfg,
+        total_steps=total,
+        start_step=start,
+    )
+
+
+def krea2_augment_color_match(strength: float) -> float:
+    """Partial peripheral color match; off when the edit is too weak to need harmonization."""
+    if not settings.color_match or strength < 0.58:
+        return 0.0
+    return clamp(0.10 + (strength - 0.58) * 0.62, 0.0, 0.48)
+
+
+def format_krea2_augment_prompt(text: str) -> str:
+    text = text.strip()
+    if not text:
+        return text
+    lower = text.lower()
+    if lower.startswith(("edit ", "add ", "remove ", "change ", "replace ", "put ")):
+        return text
+    return f"Edit this area: {text}"
 
 
 def apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[int, int]:
@@ -177,6 +216,8 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
                 clip = w.load_clip(te["ministral"], type="flux2")
             case Arch.krea2:
                 clip = w.load_clip(te["qwen_3vl_4b"], type="krea2")
+            case Arch.wan22:
+                clip = w.load_clip(te["umt5"], type="wan")
             case _:
                 raise RuntimeError(f"No text encoder for model architecture {arch.name}")
 
@@ -217,6 +258,9 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
 
     if arch.supports_attention_guidance and checkpoint.self_attention_guidance:
         model = w.apply_self_attention_guidance(model)
+
+    if arch is Arch.krea2 and "ComfyUI-Krea2T-Enhancer" in models.node_inputs:
+        model = w.krea2_prompt_enhance(model)
 
     return model, Clip(clip, arch), vae
 
@@ -360,6 +404,7 @@ class TextPrompt:
         clip: Clip,
         style_prompt: str | None = None,
         images: list[Output] | None = None,
+        image_weights: list[float] | None = None,
     ):
         text = self.text
         if text != "" and style_prompt is not None:
@@ -374,6 +419,8 @@ class TextPrompt:
                 self._output = w.text_encode_qwen_image_edit(clip.model, None, image, text)
             elif clip.arch is Arch.qwen_e_p and images:
                 self._output = w.text_encode_qwen_image_edit_plus(clip.model, None, images, text)
+            elif clip.arch is Arch.krea2 and images:
+                self._output = w.text_encode_krea2(clip.model, images, text, image_weights)
             else:
                 self._output = w.clip_text_encode(clip.model, text)
 
@@ -497,11 +544,19 @@ def encode_prompt(
     regions: Output | None,
     image: Output | None = None,
 ):
-    ref_images = [image] if image is not None else []
-    ref_images += [c.image.load(w) for c in cond.all_control if c.mode.is_ip_adapter]
+    ref_weights = None
+    if clip.arch is Arch.krea2:
+        # Krea 2 is not an edit model: only control layer references are fed to the
+        # (vision-capable) text encoder, not the img2img/inpaint input image.
+        ref_controls = [c for c in cond.all_control if c.mode.is_ip_adapter]
+        ref_images = [c.image.load(w) for c in ref_controls]
+        ref_weights = [c.strength for c in ref_controls]
+    else:
+        ref_images = [image] if image is not None else []
+        ref_images += [c.image.load(w) for c in cond.all_control if c.mode.is_ip_adapter]
 
     if len(cond.regions) <= 1 or all(len(r.loras) == 0 for r in cond.regions):
-        positive = cond.positive.encode(w, clip, cond.style_prompt, ref_images)
+        positive = cond.positive.encode(w, clip, cond.style_prompt, ref_images, ref_weights)
         negative = cond.negative.encode(w, clip) if cond.negative else positive
         return ConditioningOutput(positive, negative)
 
@@ -523,6 +578,23 @@ def encode_prompt(
         )
 
     assert positive is not None and negative is not None
+    return ConditioningOutput(positive, negative)
+
+
+def encode_prompt_krea2_augment(
+    w: ComfyWorkflow,
+    cond: Conditioning,
+    clip: Clip,
+    in_image: Output,
+    in_mask: Output,
+):
+    """Workflow-4 style: Qwen3-VL sees the masked reference region + edit instruction."""
+    text = format_krea2_augment_prompt(cond.positive.text)
+    if text and cond.positive.language:
+        text = w.translate(text)
+
+    positive = w.text_encode_krea2_augment(clip.model, text, in_image, in_mask)
+    negative = w.conditioning_zero_out(positive)
     return ConditioningOutput(positive, negative)
 
 
@@ -870,6 +942,7 @@ class MiscParams(NamedTuple):
     layer_count: int
     color_match: float
     nsfw_filter: float
+    krea2_augment_encode: bool = False
 
 
 def generate(
@@ -1216,7 +1289,10 @@ def refine_region(
     in_mask = apply_grow_feather(w, in_mask, inpaint)
     initial_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
 
-    prompt = encode_prompt(w, cond, clip, regions, in_image)
+    if misc.krea2_augment_encode and models.arch is Arch.krea2:
+        prompt = encode_prompt_krea2_augment(w, cond, clip, in_image, initial_mask)
+    else:
+        prompt = encode_prompt(w, cond, clip, regions, in_image)
 
     if inpaint.use_inpaint_model and models.control.find(ControlMode.inpaint) is not None:
         cond.control.append(inpaint_control(in_image, initial_mask, models.arch))
@@ -1538,6 +1614,30 @@ _control_instructions = {
     ControlMode.pose: "Match the pose in image {}.",
 }
 
+# Krea 2 has no numbered image tokens; instructions name the role of each reference.
+# Pose is handled separately: stick figures become text (see build_krea2_control_guidance).
+_krea2_control_instructions = {
+    ControlMode.style: "Apply the artistic style from the style reference image.",
+    ControlMode.face: (
+        "Preserve the identity and facial features of the person shown in the face"
+        " reference image."
+    ),
+    ControlMode.scribble: (
+        "Follow the composition, shapes and layout of the sketch in the scribble"
+        " reference image."
+    ),
+    ControlMode.line_art: (
+        "Use the line drawing in the line-art reference image as the structure of"
+        " the scene, filling in colors and details."
+    ),
+    ControlMode.canny_edge: (
+        "Match the edges and outlines shown in the edge-map reference image."
+    ),
+    ControlMode.depth: (
+        "Match the depth and spatial layout shown in the depth-map reference image."
+    ),
+}
+
 
 def build_instructions(cond: ConditioningInput, arch: Arch, inpaint: InpaintMode | None):
     instructions = ""
@@ -1566,6 +1666,45 @@ def build_instructions(cond: ConditioningInput, arch: Arch, inpaint: InpaintMode
     if instructions != "":
         return f"{instructions}\n{cond.positive}"
     return cond.positive
+
+
+def build_krea2_control_guidance(cond: ConditioningInput) -> str:
+    """Turn Face/Scribble/etc. into vision references + guiding prompt text.
+
+    Pose is special: stick-figure images must not reach the vision encoder (Krea 2
+    paints them into the result). Instead the OpenPose keypoints are converted to
+    a natural-language pose description in `ControlInput.text` and the control is
+    dropped so only the text remains.
+    """
+    parts: list[str] = []
+
+    def convert(controls: list) -> list:
+        kept = []
+        for control in controls:
+            if control.mode is ControlMode.pose:
+                if control.text:
+                    parts.append(control.text)
+                else:
+                    parts.append(
+                        "Pose the subject in a clear full-body stance. Do not draw"
+                        " any skeleton, stick figure, or colored pose lines."
+                    )
+                continue  # drop: no vision image, no ControlNet
+            if instruction := _krea2_control_instructions.get(control.mode):
+                parts.append(instruction)
+                control.mode = ControlMode.reference
+            kept.append(control)
+        return kept
+
+    cond.control = convert(cond.control)
+    for region in cond.regions:
+        region.control = convert(region.control)
+    if not parts:
+        return cond.positive
+    guidance = " ".join(parts)
+    if cond.positive:
+        return f"{guidance} {cond.positive}"
+    return guidance
 
 
 def prepare_prompts(
@@ -1604,6 +1743,9 @@ def prepare_prompts(
     cond.positive += _collect_lora_triggers(models.loras, files)
     if arch.is_flux2:
         cond.positive = build_instructions(cond, arch, inpaint)
+    if arch is Arch.krea2:
+        # Face/Style/Pose/Scribble/etc. become vision refs with role-specific guidance.
+        cond.positive = build_krea2_control_guidance(cond)
     if cond.positive == "" and inpaint is InpaintMode.remove_object:
         cond.positive = "background scenery"
     meta["prompt_final"] = cond.positive
@@ -1658,6 +1800,7 @@ def prepare(
     upscale: UpscaleInput | None = None,
     is_live: bool = False,
     layer_count: int = 1,
+    krea2_augment_encode: bool = False,
 ) -> WorkflowInput:
     """
     Takes UI model state, prepares images, normalizes inputs, and returns a WorkflowInput object
@@ -1665,13 +1808,17 @@ def prepare(
     """
     i = WorkflowInput(kind)
     i.conditioning = cond
-    i.sampling = sampling_from_style(style, strength, is_live)
+    arch = resolve_arch(style, models)
+    if krea2_augment_encode and arch is Arch.krea2:
+        i.sampling = sampling_for_krea2_augment(style, strength)
+    else:
+        i.sampling = sampling_from_style(style, strength, is_live)
     i.sampling.seed = seed
     i.models = style.get_models(models.checkpoints)
     i.models.loras = unique(i.models.loras + (loras or []), key=lambda l: l.name)
     i.models.dynamic_caching = perf.dynamic_caching
     i.models.tiled_vae = perf.tiled_vae
-    arch = i.models.version = resolve_arch(style, models)
+    i.models.version = arch
 
     _check_server_has_models(i.models, i.conditioning.regions, models, files, style.name)
     _check_inpaint_model(inpaint, arch, models)
@@ -1682,7 +1829,10 @@ def prepare(
     all_control = cond.control + [c for r in cond.regions for c in r.control]
     face_weight = median_or_zero(c.strength for c in all_control if c.mode is ControlMode.face)
     if face_weight > 0:
-        i.models.loras.append(LoraInput(model_set.lora["face"], 0.65 * face_weight))
+        # FaceID LoRA only exists for SD1.5/SDXL. Other architectures (Krea 2,
+        # Flux 2, edit models) handle face references via vision conditioning.
+        if face_lora := model_set.lora.find(ControlMode.face):
+            i.models.loras.append(LoraInput(face_lora, 0.65 * face_weight))
 
     if kind is WorkflowKind.generate:
         assert isinstance(canvas, Extent)
@@ -1716,14 +1866,30 @@ def prepare(
         )
         downscale_all_control_images(i.conditioning, canvas.extent, i.images.extent.desired)
 
+    elif kind is WorkflowKind.augment:
+        assert isinstance(canvas, Image) and style
+        i.images, i.batch_count = resolution.prepare_image(
+            canvas, arch, style, perf, downscale=False
+        )
+        downscale_all_control_images(i.conditioning, canvas.extent, i.images.extent.desired)
+
     elif kind is WorkflowKind.refine_region:
         assert isinstance(canvas, Image) and mask and inpaint and style
-        allow_2pass = strength >= 0.7
+        use_krea2_augment = krea2_augment_encode and arch is Arch.krea2
+        allow_2pass = strength >= 0.7 and not use_krea2_augment
         i.images, i.batch_count = resolution.prepare_image(
-            canvas, arch, style, perf, downscale=allow_2pass
+            canvas,
+            arch,
+            style,
+            perf,
+            downscale=allow_2pass,
+            inpaint=use_krea2_augment,
         )
         i.images.hires_mask = mask.to_image(canvas.extent)
         i.inpaint = InpaintParams.clamped(inpaint)
+        i.krea2_augment_encode = use_krea2_augment
+        if use_krea2_augment:
+            i.color_match = krea2_augment_color_match(strength)
         downscale_all_control_images(i.conditioning, canvas.extent, i.images.extent.desired)
 
     elif kind is WorkflowKind.upscale_tiled:
@@ -1758,7 +1924,8 @@ def prepare(
 
     i.batch_count = 1 if is_live else i.batch_count
     i.images.layer_count = layer_count if arch is Arch.qwen_l else 1
-    i.color_match = 1.0 if settings.color_match else 0.0
+    if not (kind is WorkflowKind.refine_region and i.krea2_augment_encode):
+        i.color_match = 1.0 if settings.color_match else 0.0
     i.nsfw_filter = settings.nsfw_filter
     return i
 
@@ -1788,6 +1955,329 @@ def prepare_create_control_image(
     return i
 
 
+def prepare_describe(
+    image: Image,
+    task: str,
+    model: str,
+    provider: str = "florence",
+    instruction: str = "",
+    quantization: str = "",
+) -> WorkflowInput:
+    i = WorkflowInput(WorkflowKind.describe)
+    # Qwen-VL activations scale with image tokens — keep inputs modest on consumer GPUs.
+    max_side = 1024 if provider == "qwenvl" else 2048
+    if image.extent.longest_side > max_side:
+        image = Image.scale_to_fit(image, Extent(max_side, max_side))
+    i.images = ImageInput.from_extent(image.extent)
+    i.images.initial_image = image
+    i.describe = DescribeInput(
+        task=task, model=model, provider=provider, instruction=instruction, quantization=quantization
+    )
+    return i
+
+
+def prepare_augment(
+    image: Image,
+    cond: ConditioningInput,
+    style: Style,
+    seed: int,
+    models: ClientModels,
+    files: FileLibrary,
+    perf: PerformanceSettings,
+    strength: float = 0.4,
+    loras: list[LoraInput] | None = None,
+) -> WorkflowInput:
+    return prepare(
+        WorkflowKind.augment,
+        image,
+        cond,
+        style,
+        seed,
+        models,
+        files,
+        perf,
+        strength=strength,
+        loras=loras,
+    )
+
+
+def describe(w: ComfyWorkflow, image: Image, params: DescribeInput):
+    if not params.model:
+        raise ValueError("No caption model found on the server")
+    input_image = w.load_image(image)
+    if params.provider == "qwenvl":
+        w.describe_image_qwenvl(input_image, params.instruction, params.model, params.quantization)
+    else:
+        w.describe_image(input_image, params.task, params.model)
+    return w
+
+
+def estimate_seedvr_extent(
+    source: Extent, resolution: int, max_resolution: int = 0
+) -> Extent:
+    """Match SeedVR2 shortest-edge scaling (even dimensions)."""
+    resolution = max(16, int(resolution) - (int(resolution) % 2))
+    short = max(1, min(source.width, source.height))
+    scale = resolution / short
+    width = max(2, int(round(source.width * scale)))
+    height = max(2, int(round(source.height * scale)))
+    width -= width % 2
+    height -= height % 2
+    if max_resolution and max_resolution > 0:
+        long = max(width, height)
+        if long > max_resolution:
+            s2 = max_resolution / long
+            width = max(2, int(width * s2))
+            height = max(2, int(height * s2))
+            width -= width % 2
+            height -= height % 2
+    return Extent(width, height)
+
+
+def prepare_seedvr(params: SeedVRInput, image: Image) -> WorkflowInput:
+    """Build WorkflowInput for SeedVR2 single-image upscale."""
+    target = estimate_seedvr_extent(
+        image.extent, params.resolution, params.max_resolution
+    )
+    images = ImageInput.from_extent(target)
+    images.initial_image = image
+    # Keep input extent for factor math / canvas resize
+    images.extent = ExtentInput(image.extent, target, target, target)
+    i = WorkflowInput(WorkflowKind.seedvr, images)
+    i.seedvr = params
+    i.batch_count = 1
+    i.sampling = SamplingInput("euler", "normal", 1.0, 1, seed=params.seed)
+    return i
+
+
+def seedvr_image(w: ComfyWorkflow, images: ImageInput, params: SeedVRInput) -> ComfyWorkflow:
+    """SeedVR2 3-node image graph: DiT loader → VAE loader → VideoUpscaler (batch=1)."""
+    image = ensure(images.initial_image)
+    image_out = w.load_image(image)
+
+    dit = w.add(
+        "SeedVR2LoadDiTModel",
+        1,
+        model=params.dit_model,
+        device=params.device,
+        blocks_to_swap=max(0, int(params.blocks_to_swap)),
+        swap_io_components=bool(params.swap_io_components),
+        offload_device=params.dit_offload_device or "none",
+        cache_model=bool(params.cache_model),
+        attention_mode=params.attention_mode or "sdpa",
+    )
+    vae = w.add(
+        "SeedVR2LoadVAEModel",
+        1,
+        model=params.vae_model,
+        device=params.device,
+        encode_tiled=bool(params.encode_tiled),
+        encode_tile_size=max(64, int(params.encode_tile_size)),
+        encode_tile_overlap=max(0, int(params.encode_tile_overlap)),
+        decode_tiled=bool(params.decode_tiled),
+        decode_tile_size=max(64, int(params.decode_tile_size)),
+        decode_tile_overlap=max(0, int(params.decode_tile_overlap)),
+        tile_debug=params.tile_debug or "false",
+        offload_device=params.vae_offload_device or "none",
+        cache_model=bool(params.cache_model),
+    )
+    # Image path: batch_size must be 1 (4n+1); temporal extras stay 0
+    batch = max(1, int(params.batch_size))
+    if (batch - 1) % 4 != 0:
+        batch = 1
+    up = w.add(
+        "SeedVR2VideoUpscaler",
+        1,
+        image=image_out,
+        dit=dit,
+        vae=vae,
+        seed=int(params.seed) & 0xFFFFFFFF,
+        resolution=max(16, int(params.resolution)),
+        max_resolution=max(0, int(params.max_resolution)),
+        batch_size=batch,
+        uniform_batch_size=bool(params.uniform_batch_size),
+        temporal_overlap=max(0, int(params.temporal_overlap)),
+        prepend_frames=max(0, int(params.prepend_frames)),
+        color_correction=params.color_correction or "lab",
+        input_noise_scale=float(params.input_noise_scale),
+        latent_noise_scale=float(params.latent_noise_scale),
+        offload_device=params.tensor_offload_device or "cpu",
+        enable_debug=bool(params.enable_debug),
+    )
+    w.sample_count += 24
+    w.send_image(up)
+    return w
+
+
+def prepare_wan_video(
+    params: WanVideoInput,
+    start_image: Image | None,
+    seed: int,
+) -> WorkflowInput:
+    """Build a WorkflowInput for Wan 2.2 I2V / FLF2V / T2V."""
+    width = multiple_of(params.width, 16)
+    height = multiple_of(params.height, 16)
+    # Wan latent length expects 4n+1 frames
+    length = max(1, params.length)
+    if (length - 1) % 4 != 0:
+        length = ((length - 1) // 4) * 4 + 1
+    params = WanVideoInput(
+        mode=params.mode,
+        positive=params.positive,
+        negative=params.negative,
+        width=width,
+        height=height,
+        length=length,
+        high_noise_model=params.high_noise_model,
+        low_noise_model=params.low_noise_model,
+        text_encoder=params.text_encoder,
+        vae=params.vae,
+        steps=params.steps,
+        split_step=params.split_step,
+        cfg=params.cfg,
+        sampler=params.sampler,
+        scheduler=params.scheduler,
+        shift=params.shift,
+        end_image=params.end_image,
+        loras=list(params.loras),
+    )
+    extent = Extent(width, height)
+    images = ImageInput.from_extent(extent)
+    if start_image is not None:
+        images.initial_image = (
+            Image.scale(start_image, extent) if start_image.extent != extent else start_image
+        )
+    if params.end_image is not None and params.end_image.extent != extent:
+        params.end_image = Image.scale(params.end_image, extent)
+    i = WorkflowInput(WorkflowKind.wan_video, images)
+    i.wan_video = params
+    i.sampling = SamplingInput(params.sampler, params.scheduler, params.cfg, params.steps, seed=seed)
+    i.batch_count = 1
+    return i
+
+
+def wan_video(
+    w: ComfyWorkflow,
+    images: ImageInput,
+    params: WanVideoInput,
+    seed: int,
+) -> ComfyWorkflow:
+    """Native Wan 2.2 dual-model (high/low noise) I2V, FLF2V, or T2V graph."""
+    if not params.high_noise_model or not params.low_noise_model:
+        raise ValueError(
+            "Wan 2.2 requires high-noise and low-noise diffusion models. "
+            "Download I2V or T2V models into ComfyUI/models/diffusion_models."
+        )
+    if not params.text_encoder:
+        raise ValueError("Wan 2.2 requires umt5 text encoder in ComfyUI/models/text_encoders.")
+    if not params.vae:
+        raise ValueError("Wan 2.2 requires wan_2.1_vae in ComfyUI/models/vae.")
+
+    clip = w.load_clip(params.text_encoder, type="wan")
+    vae = w.load_vae(params.vae)
+    high = w.load_diffusion_model(params.high_noise_model)
+    low = w.load_diffusion_model(params.low_noise_model)
+    for lora in params.loras:
+        if lora.name:
+            high = w.load_lora_model(high, lora.name, lora.strength)
+            low = w.load_lora_model(low, lora.name, lora.strength)
+    high = w.model_sampling_sd3(high, params.shift)
+    low = w.model_sampling_sd3(low, params.shift)
+
+    pos = w.clip_text_encode(clip, params.positive)
+    neg = w.clip_text_encode(clip, params.negative or "")
+    cond = ConditioningOutput(pos, neg)
+
+    if params.mode is WanVideoMode.t2v:
+        # Text-only: empty video latent + raw CLIP conditioning (needs wan2.2_t2v_* UNETs)
+        latent = w.add(
+            "EmptyHunyuanLatentVideo",
+            1,
+            width=params.width,
+            height=params.height,
+            length=params.length,
+            batch_size=1,
+        )
+        cond2 = ConditioningOutput(pos, neg)
+    elif params.mode is WanVideoMode.flf2v:
+        start = ensure(images.initial_image)
+        start_out = w.load_image(start)
+        end = ensure(params.end_image)
+        end_out = w.load_image(end)
+        pos2, neg2, latent = w.add(
+            "WanFirstLastFrameToVideo",
+            3,
+            positive=cond.positive,
+            negative=cond.negative,
+            vae=vae,
+            width=params.width,
+            height=params.height,
+            length=params.length,
+            batch_size=1,
+            start_image=start_out,
+            end_image=end_out,
+        )
+        cond2 = ConditioningOutput(pos2, neg2)
+    else:
+        start = ensure(images.initial_image)
+        start_out = w.load_image(start)
+        pos2, neg2, latent = w.add(
+            "WanImageToVideo",
+            3,
+            positive=cond.positive,
+            negative=cond.negative,
+            vae=vae,
+            width=params.width,
+            height=params.height,
+            length=params.length,
+            batch_size=1,
+            start_image=start_out,
+        )
+        cond2 = ConditioningOutput(pos2, neg2)
+
+    steps = max(2, params.steps)
+    split = clamp(params.split_step, 1, steps - 1)
+    w.sample_count += steps
+
+    latent1 = w.add(
+        "KSamplerAdvanced",
+        1,
+        add_noise="enable",
+        noise_seed=seed,
+        steps=steps,
+        cfg=params.cfg,
+        sampler_name=params.sampler,
+        scheduler=params.scheduler,
+        positive=cond2.positive,
+        negative=cond2.negative,
+        latent_image=latent,
+        start_at_step=0,
+        end_at_step=split,
+        return_with_leftover_noise="enable",
+        model=high,
+    )
+    latent2 = w.add(
+        "KSamplerAdvanced",
+        1,
+        add_noise="disable",
+        noise_seed=0,
+        steps=steps,
+        cfg=params.cfg,
+        sampler_name=params.sampler,
+        scheduler=params.scheduler,
+        positive=cond2.positive,
+        negative=cond2.negative,
+        latent_image=latent1,
+        start_at_step=split,
+        end_at_step=steps,
+        return_with_leftover_noise="disable",
+        model=low,
+    )
+    frames = w.vae_decode(vae, latent2)
+    w.send_image(frames)
+    return w
+
+
 def create(i: WorkflowInput, models: ClientModels, comfy_mode=ComfyRunMode.server) -> ComfyWorkflow:
     """
     Takes a WorkflowInput object and creates the corresponding ComfyUI workflow prompt.
@@ -1795,7 +2285,9 @@ def create(i: WorkflowInput, models: ClientModels, comfy_mode=ComfyRunMode.serve
     """
     workflow = ComfyWorkflow(models.node_inputs, comfy_mode)
     layer_count = i.images.layer_count if i.images else 1
-    misc = MiscParams(i.batch_count, layer_count, i.color_match, i.nsfw_filter)
+    misc = MiscParams(
+        i.batch_count, layer_count, i.color_match, i.nsfw_filter, i.krea2_augment_encode
+    )
 
     if i.kind is WorkflowKind.generate:
         return generate(
@@ -1820,6 +2312,17 @@ def create(i: WorkflowInput, models: ClientModels, comfy_mode=ComfyRunMode.serve
             models.for_arch(ensure(i.models).version),
         )
     elif i.kind is WorkflowKind.refine:
+        return refine(
+            workflow,
+            i.image,
+            ScaledExtent.from_input(i.extent),
+            ensure(i.models),
+            Conditioning.from_input(ensure(i.conditioning), i.sampling),
+            ensure(i.sampling),
+            misc,
+            models.for_arch(ensure(i.models).version),
+        )
+    elif i.kind is WorkflowKind.augment:
         return refine(
             workflow,
             i.image,
@@ -1864,6 +2367,17 @@ def create(i: WorkflowInput, models: ClientModels, comfy_mode=ComfyRunMode.serve
             bounds=i.inpaint.target_bounds if i.inpaint else None,
             seed=i.sampling.seed if i.sampling else -1,
         )
+    elif i.kind is WorkflowKind.describe:
+        return describe(workflow, i.image, ensure(i.describe))
+    elif i.kind is WorkflowKind.wan_video:
+        return wan_video(
+            workflow,
+            ensure(i.images),
+            ensure(i.wan_video),
+            ensure(i.sampling).seed,
+        )
+    elif i.kind is WorkflowKind.seedvr:
+        return seedvr_image(workflow, ensure(i.images), ensure(i.seedvr))
     elif i.kind is WorkflowKind.custom:
         seed = ensure(i.sampling).seed
         return expand_custom(

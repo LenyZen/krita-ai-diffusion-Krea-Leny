@@ -20,6 +20,75 @@ class WorkflowKind(Enum):
     upscale_tiled = 5
     control_image = 6
     custom = 7
+    describe = 8
+    augment = 9
+    wan_video = 10
+    seedvr = 11
+
+
+class WanVideoMode(Enum):
+    i2v = 0  # start image + prompt
+    flf2v = 1  # start + end frames + prompt
+    t2v = 2  # text prompt only (no start image; needs wan2.2_t2v_* UNETs)
+
+
+@dataclass
+class SeedVRInput:
+    """ComfyUI-SeedVR2 image upscale (single-frame via SeedVR2VideoUpscaler)."""
+
+    dit_model: str = "seedvr2_ema_3b_fp8_e4m3fn.safetensors"
+    vae_model: str = "ema_vae_fp16.safetensors"
+    device: str = "cuda:0"
+    offload_device: str = "cpu"  # DiT/VAE offload + tensor offload default
+    dit_offload_device: str = "cpu"
+    vae_offload_device: str = "none"
+    blocks_to_swap: int = 16
+    swap_io_components: bool = True
+    cache_model: bool = False
+    attention_mode: str = "sdpa"
+    encode_tiled: bool = True
+    decode_tiled: bool = True
+    encode_tile_size: int = 512
+    encode_tile_overlap: int = 64
+    decode_tile_size: int = 512
+    decode_tile_overlap: int = 64
+    tile_debug: str = "false"
+    seed: int = 42
+    resolution: int = 1080  # shortest-edge target
+    max_resolution: int = 0  # 0 = no limit
+    batch_size: int = 1  # images: always 1 (4n+1)
+    uniform_batch_size: bool = False
+    temporal_overlap: int = 0
+    prepend_frames: int = 0
+    color_correction: str = "lab"
+    input_noise_scale: float = 0.0
+    latent_noise_scale: float = 0.0
+    tensor_offload_device: str = "cpu"
+    enable_debug: bool = False
+
+
+@dataclass
+class WanVideoInput:
+    mode: WanVideoMode = WanVideoMode.i2v
+    positive: str = ""
+    negative: str = ""
+    width: int = 640
+    height: int = 640
+    length: int = 33  # frames (must be 4n+1 for Wan)
+    high_noise_model: str = ""
+    low_noise_model: str = ""
+    text_encoder: str = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+    vae: str = "wan_2.1_vae.safetensors"
+    steps: int = 4
+    split_step: int = 2
+    cfg: float = 1.0
+    sampler: str = "lcm"
+    scheduler: str = "sgm_uniform"
+    shift: float = 8.0
+    end_image: Image | None = None  # FLF2V only; start is WorkflowInput.images.initial_image
+    # Applied to both high/low UNETs via LoraLoaderModelOnly (Wan video LoRAs)
+    loras: list["LoraInput"] = field(default_factory=list)
+    # T2V: no start image; I2V/FLF2V require images.initial_image
 
 
 @dataclass
@@ -92,6 +161,7 @@ class ControlInput:
     image: Image | None = None
     strength: float = 1.0
     range: tuple[float, float] = (0.0, 1.0)
+    text: str = ""  # optional text guidance (e.g. Krea 2 pose description)
 
 
 @dataclass
@@ -175,6 +245,15 @@ class CustomStyleInput:
 
 
 @dataclass
+class DescribeInput:
+    task: str = "more_detailed_caption"  # Florence2Run task name
+    model: str = ""  # preferred model folder name, empty = auto-select
+    provider: str = "florence"  # "florence" or "qwenvl"
+    instruction: str = ""  # custom prompt for instruction-following VLM (qwenvl)
+    quantization: str = ""  # qwenvl on-the-fly quantization, empty = server default
+
+
+@dataclass
 class CustomWorkflowInput:
     workflow: dict
     params: dict[str, Any]
@@ -199,6 +278,10 @@ class WorkflowInput:
     color_match: float = 0.0
     nsfw_filter: float = 0.0
     custom_workflow: CustomWorkflowInput | None = None
+    describe: DescribeInput | None = None
+    wan_video: WanVideoInput | None = None
+    seedvr: SeedVRInput | None = None
+    krea2_augment_encode: bool = False
 
     @property
     def extent(self):
@@ -251,6 +334,10 @@ class WorkflowInput:
             return 1
         if self.kind is WorkflowKind.upscale_simple:
             return 2
+        if self.kind is WorkflowKind.describe:
+            return 1
+        if self.kind is WorkflowKind.augment:
+            return 1
 
         def cost_factor(batch: int, extent: Extent, steps: int):
             return batch * extent.pixel_count * math.sqrt(extent.pixel_count) * steps

@@ -1,0 +1,22 @@
+=====================================================================
+ Krita AI Diffusion - Krea 2 + Describe Edition
+ → See INSTALL-BETA.txt for the current beta tester guide
+=====================================================================
+
+This file is kept for compatibility with earlier zip packages.
+The up-to-date installation, feature list, and troubleshooting guide is:
+
+  INSTALL-BETA.txt
+
+Also see:
+
+  CHANGELOG-BETA.txt
+
+Quick install reminder
+----------------------
+1. Back up %APPDATA%\krita\pykrita\ai_diffusion if present
+2. Tools > Scripts > Import Python Plugin from File…  (this zip)
+   OR copy ai_diffusion\ + ai_diffusion.desktop into pykrita\
+3. Enable "AI Image Diffusion", restart Krita
+4. Install custom nodes and models as listed in INSTALL-BETA.txt
+5. Apply tooling-nodes-api.py over comfyui-tooling-nodes\api.py
