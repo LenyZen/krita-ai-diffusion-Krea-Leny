@@ -508,7 +508,8 @@ def loras_to_upload(workflow: WorkflowInput, client_models: ClientModels):
         for region in cond.regions:
             workflow_loras.extend(region.loras)
     if wan := workflow.wan_video:
-        workflow_loras.extend(wan.loras)
+        workflow_loras.extend(wan.loras_high)
+        workflow_loras.extend(wan.loras_low)
 
     for lora in workflow_loras:
         if lora.name in client_models.loras:

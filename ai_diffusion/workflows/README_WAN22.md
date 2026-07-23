@@ -29,19 +29,49 @@ Repo: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged
 | `wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors` | https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors |
 | `wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors` | https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors |
 
-## T2V — official Comfy fp8
+**Scenario A — native quality:** no LoRAs, 20–30 steps, split 50/50, euler + simple.  
+**Scenario B — ultra-fast:** load lightx2v LoRAs on the matching high/low expert lines, 4–8 steps.
+
+### Optional I2V lightx2v LoRAs → `loras/`
+
+| File | Download |
+|------|----------|
+| `wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors` | https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors |
+| `wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors` | https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors |
+
+## TI2V-5B — single model (Animate preset “TI2V 5B”)
+
+Uses `Wan22ImageToVideoLatent` + one `KSampler` (not dual high/low). Needs **wan2.2_vae** (not wan_2.1_vae). T2V and I2V only — no FLF2V/Stitch.
+
+| File | Folder | Download |
+|------|--------|----------|
+| `wan2.2_ti2v_5B_fp16.safetensors` | `diffusion_models/` | https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors |
+| `wan2.2_vae.safetensors` | `vae/` | https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan2.2_vae.safetensors |
+
+Presets in Animate (shift **8** unless noted):
+- **Config 1** — uni_pc / simple / 30 / CFG 5
+- **Config 2** — dpmpp_2m / karras / 26 / CFG 4 / **shift 5** (text & physics)
+- **Config 3** — res_2m / bong_tangent / 32 / CFG 4.5 (needs RES4LYF/ClownShark)
+- **Config 4** — euler / beta / 25 / CFG 5 (smooth motion)
+- **Config 5** — lcm / normal / 14 / CFG 2.5 (low-VRAM draft)
+
+14B presets (Mode selects I2V vs T2V models/LoRAs): Config 1–2 lightx2v, Config 3 native max, Config 4–5 need RES4LYF.
+
+## T2V — official Comfy fp8 (14B)
 
 | File | Folder | Download |
 |------|--------|----------|
 | `wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors` | `diffusion_models/` | https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors |
 | `wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors` | `diffusion_models/` | https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors |
 
-### Optional T2V 4-step LoRAs → `loras/`
+### Optional T2V lightx2v LoRAs → `loras/`
 
 | File | Download |
 |------|----------|
 | `wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors` | https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors |
 | `wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors` | https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors |
+
+In Animate, set each LoRA’s **Target** to High or Low (not Both). Speed presets do this automatically.
 
 Do not mix I2V and T2V UNETs in one run.
 

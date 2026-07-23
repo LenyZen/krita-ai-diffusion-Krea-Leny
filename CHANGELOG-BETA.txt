@@ -17,8 +17,11 @@ SeedVR Enhance
 
 Animate (Wan)
   * T2V / I2V / FLF2V, Extend from last, Stitch to End
-  * Sampler / scheduler / sampling presets (euler for T2V+lightx2v)
-  * Progress / next-step status hints; up to 3 Video LoRAs
+  * TI2V-5B single-sampler path (wan2.2_vae)
+  * 5B / 14B Config 1–5 sampling presets (native, lightx2v, ClownShark notes)
+  * Per-expert Video LoRAs (Target Both / High / Low); missing-LoRA popup blocks Generate
+  * Video Settings pop-out dialog (presets → models → sampler/steps/CFG/shift + LoRAs)
+  * Progress / ETA status hints; dual high/low sampler override for Config 5
 
 Comic
   * Multi-panel page layouts, characters/scenes, draft/refine/lock/assemble

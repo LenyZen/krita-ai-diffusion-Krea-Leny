@@ -27,7 +27,7 @@ report bugs, confusing UI, and missing docs — thank you!
   * SVG / CNC / Laser workspace — silhouette, line art, or limited-
     color images; Export SVG or Add Vector Layer in Krita
   * Animate (Wan) workspace — Wan 2.2 T2V / I2V / FLF2V, Extend, Stitch,
-    progress hints, sampler presets, up to 3 Video LoRAs
+    progress hints, sampler presets, up to 4 Video LoRAs (High/Low/Both target)
   * SeedVR Enhance workspace — SeedVR2 diffusion upscale (separate
     from the existing ESRGAN Upscale tab)
   * "Krea 2 Turbo - ER SDE" sampler preset
@@ -176,7 +176,23 @@ Put each file in the folder shown relative to your ComfyUI root.
   → models\vae\
     https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors
 
---- Wan 2.2 T2V (Animate → Text → Video) ---
+--- Wan 2.2 TI2V-5B (Animate 5B presets) ---
+  One hybrid model for T2V + I2V (not FLF2V/Stitch). Uses wan2.2_vae (not 2.1).
+  Overview: https://comfyanonymous.github.io/ComfyUI_examples/wan22/
+
+  → models\diffusion_models\
+    https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors
+  → models\vae\
+    https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan2.2_vae.safetensors
+  Same umt5 text encoder as 14B. Shift 8 unless noted.
+  Presets (Animate → Preset):
+    Config 1 = uni_pc / simple / 30 / CFG 5
+    Config 2 = dpmpp_2m / karras / 26 / CFG 4 / shift 5  (text & physics)
+    Config 3 = res_2m / bong_tangent / 32 / CFG 4.5  (needs RES4LYF/ClownShark)
+    Config 4 = euler / beta / 25 / CFG 5  (smooth motion)
+    Config 5 = lcm / normal / 14 / CFG 2.5  (low-VRAM draft)
+
+--- Wan 2.2 T2V 14B (Animate → Text → Video) ---
   Repo: https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged
   Overview: https://comfyanonymous.github.io/ComfyUI_examples/wan22/
 
@@ -184,7 +200,8 @@ Put each file in the folder shown relative to your ComfyUI root.
     https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors
     https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors
 
-  Optional 4-step LoRAs → models\loras\  (add both in Animate Video LoRAs @ 1.0)
+  Optional lightx2v speed LoRAs → models\loras\
+  (Animate presets set Target=High / Low automatically @ strength 1.0)
     https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors
     https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors
 
@@ -194,10 +211,19 @@ Put each file in the folder shown relative to your ComfyUI root.
     https://huggingface.co/lightx2v/Wan2.2-Distill-Models/resolve/main/wan2.2_i2v_A14b_high_noise_scaled_fp8_e4m3_lightx2v_4step_comfyui.safetensors
     https://huggingface.co/lightx2v/Wan2.2-Distill-Models/resolve/main/wan2.2_i2v_A14b_low_noise_scaled_fp8_e4m3_lightx2v_4step_comfyui.safetensors
   (A “_1030” high-noise variant is also fine if that is what you already have.)
+  Distilled UNETs = no separate LoRAs (preset clears Video LoRAs).
 
-  Official Comfy fp8 pair (non-distilled; slower, often needs more steps):
+  Official Comfy fp8 pair (non-distilled) — two paths:
     https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
     https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+  14B presets follow Mode (I2V vs T2V) for UNETs + LightX2V LoRAs:
+    Config 1 = euler / simple / 4 / split 2 / CFG 1 / LoRA 1.0
+    Config 2 = dpmpp_2m / sgm_uniform / 8 / split 4 / CFG 1.75 / LoRA 1.2
+    Config 3 = euler / simple / 26 / split 13 / CFG 5 / no LoRA
+    Config 4 = res_2m / bong_tangent / 30 / split 15 / CFG 4.5 (needs RES4LYF)
+    Config 5 = high euler + low res_2s / beta57 / 32 / split 12 (needs RES4LYF)
+    https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors
+    https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
 
   Do not mix I2V and T2V UNETs in the same run — pick Mode first; the
   plugin prefers the matching family when both are installed.
@@ -252,12 +278,13 @@ SVG / CNC / Laser
   Tracing uses bundled potrace / vtracer helpers when available.
 
 Animate (Wan)
-  T2V = prompt only (needs wan2.2_t2v_*). I2V from current layer, or FLF2V first/last.
-  Extend = continue from last frame; Stitch = FLF2V toward End frame
+  Presets: 5B Config 1–5 and 14B Config 1–5 (Mode picks I2V vs T2V weights/LoRAs).
+  14B Low sampler can differ from High (Config 5 asymmetric). Keep split ~50/50
+  unless Config 5 (12/20). RES4LYF/ClownShark needed for res_2m / bong_tangent / beta57.
+  Extend = continue from last frame; Stitch = FLF2V toward End (14B only).
   Results land in the .kra Timeline (not an MP4). Export via
   File → Render Animation when you need a video file.
-  Use sampling presets (euler for T2V+lightx2v; lcm for distilled I2V).
-  Up to 3 Video LoRAs in the panel
+  Up to 4 Video LoRAs; each has Target Both / High / Low
 
 SeedVR Enhance
   Separate from Upscale (ESRGAN). Pick preset, target size, Enhance.

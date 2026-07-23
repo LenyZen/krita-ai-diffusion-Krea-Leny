@@ -32,6 +32,13 @@ class WanVideoMode(Enum):
     t2v = 2  # text prompt only (no start image; needs wan2.2_t2v_* UNETs)
 
 
+class WanArch(Enum):
+    """Which Wan 2.2 checkpoint family / graph to run."""
+
+    moe14b = 0  # dual high/low noise experts (I2V or T2V 14B)
+    ti2v5b = 1  # single TI2V-5B model + wan2.2_vae + Wan22ImageToVideoLatent
+
+
 @dataclass
 class SeedVRInput:
     """ComfyUI-SeedVR2 image upscale (single-frame via SeedVR2VideoUpscaler)."""
@@ -70,24 +77,29 @@ class SeedVRInput:
 @dataclass
 class WanVideoInput:
     mode: WanVideoMode = WanVideoMode.i2v
+    arch: WanArch = WanArch.moe14b
     positive: str = ""
     negative: str = ""
     width: int = 640
     height: int = 640
     length: int = 33  # frames (must be 4n+1 for Wan)
-    high_noise_model: str = ""
-    low_noise_model: str = ""
+    high_noise_model: str = ""  # 14B high expert, or the single 5B TI2V unet
+    low_noise_model: str = ""  # 14B low expert; unused for ti2v5b
     text_encoder: str = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
-    vae: str = "wan_2.1_vae.safetensors"
+    vae: str = "wan_2.1_vae.safetensors"  # wan2.2_vae for ti2v5b
     steps: int = 4
     split_step: int = 2
     cfg: float = 1.0
-    sampler: str = "lcm"
+    sampler: str = "lcm"  # high-expert (14B) or sole (5B) sampler
     scheduler: str = "sgm_uniform"
+    # Optional low-expert overrides (empty = same as sampler/scheduler)
+    sampler_low: str = ""
+    scheduler_low: str = ""
     shift: float = 8.0
-    end_image: Image | None = None  # FLF2V only; start is WorkflowInput.images.initial_image
-    # Applied to both high/low UNETs via LoraLoaderModelOnly (Wan video LoRAs)
-    loras: list["LoraInput"] = field(default_factory=list)
+    end_image: Image | None = None  # FLF2V only (14B); start is WorkflowInput.images.initial_image
+    # Per-expert LoRAs (lightx2v high/low must go on the matching UNET line)
+    loras_high: list["LoraInput"] = field(default_factory=list)
+    loras_low: list["LoraInput"] = field(default_factory=list)
     # T2V: no start image; I2V/FLF2V require images.initial_image
 
 

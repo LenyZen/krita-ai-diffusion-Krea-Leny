@@ -37,6 +37,7 @@ from .api import (
     SamplingInput,
     SeedVRInput,
     UpscaleInput,
+    WanArch,
     WanVideoInput,
     WanVideoMode,
     WorkflowInput,
@@ -2114,15 +2115,18 @@ def prepare_wan_video(
     start_image: Image | None,
     seed: int,
 ) -> WorkflowInput:
-    """Build a WorkflowInput for Wan 2.2 I2V / FLF2V / T2V."""
-    width = multiple_of(params.width, 16)
-    height = multiple_of(params.height, 16)
+    """Build a WorkflowInput for Wan 2.2 I2V / FLF2V / T2V (14B MoE or TI2V-5B)."""
+    # 5B Wan22 latent node wants multiples of 32; 14B uses 16
+    align = 32 if params.arch is WanArch.ti2v5b else 16
+    width = multiple_of(params.width, align)
+    height = multiple_of(params.height, align)
     # Wan latent length expects 4n+1 frames
     length = max(1, params.length)
     if (length - 1) % 4 != 0:
         length = ((length - 1) // 4) * 4 + 1
     params = WanVideoInput(
         mode=params.mode,
+        arch=params.arch,
         positive=params.positive,
         negative=params.negative,
         width=width,
@@ -2137,9 +2141,12 @@ def prepare_wan_video(
         cfg=params.cfg,
         sampler=params.sampler,
         scheduler=params.scheduler,
+        sampler_low=params.sampler_low,
+        scheduler_low=params.scheduler_low,
         shift=params.shift,
         end_image=params.end_image,
-        loras=list(params.loras),
+        loras_high=list(params.loras_high),
+        loras_low=list(params.loras_low),
     )
     extent = Extent(width, height)
     images = ImageInput.from_extent(extent)
@@ -2162,7 +2169,86 @@ def wan_video(
     params: WanVideoInput,
     seed: int,
 ) -> ComfyWorkflow:
-    """Native Wan 2.2 dual-model (high/low noise) I2V, FLF2V, or T2V graph."""
+    """Native Wan 2.2 graph: 14B dual-expert MoE or TI2V-5B single sampler."""
+    if params.arch is WanArch.ti2v5b:
+        return _wan_video_ti2v5b(w, images, params, seed)
+    return _wan_video_moe14b(w, images, params, seed)
+
+
+def _wan_video_ti2v5b(
+    w: ComfyWorkflow,
+    images: ImageInput,
+    params: WanVideoInput,
+    seed: int,
+) -> ComfyWorkflow:
+    """Single-model Wan 2.2 TI2V-5B (Wan22ImageToVideoLatent + KSampler)."""
+    if not params.high_noise_model:
+        raise ValueError(
+            "Wan 2.2 TI2V-5B requires wan2.2_ti2v_5B_*.safetensors in "
+            "ComfyUI/models/diffusion_models."
+        )
+    if params.mode is WanVideoMode.flf2v:
+        raise ValueError(
+            "TI2V-5B does not support Start/End (FLF2V) or Stitch. "
+            "Use Image→Video or Text→Video, or switch back to a 14B preset."
+        )
+    if not params.text_encoder:
+        raise ValueError("Wan 2.2 requires umt5 text encoder in ComfyUI/models/text_encoders.")
+    if not params.vae:
+        raise ValueError("Wan 2.2 TI2V-5B requires wan2.2_vae in ComfyUI/models/vae.")
+
+    clip = w.load_clip(params.text_encoder, type="wan")
+    vae = w.load_vae(params.vae)
+    model = w.load_diffusion_model(params.high_noise_model)
+    # 5B is a single UNET — apply unique LoRAs from both expert lists
+    seen: set[str] = set()
+    for lora in (*params.loras_high, *params.loras_low):
+        if lora.name and lora.name not in seen:
+            seen.add(lora.name)
+            model = w.load_lora_model(model, lora.name, lora.strength)
+    model = w.model_sampling_sd3(model, params.shift)
+
+    pos = w.clip_text_encode(clip, params.positive)
+    neg = w.clip_text_encode(clip, params.negative or "")
+    cond = ConditioningOutput(pos, neg)
+
+    latent_args = dict(
+        vae=vae,
+        width=params.width,
+        height=params.height,
+        length=params.length,
+        batch_size=1,
+    )
+    if params.mode is WanVideoMode.i2v:
+        start = ensure(images.initial_image)
+        latent_args["start_image"] = w.load_image(start)
+    # T2V: omit start_image — Wan22ImageToVideoLatent builds an empty video latent
+    latent = w.add("Wan22ImageToVideoLatent", 1, **latent_args)
+
+    steps = max(1, params.steps)
+    latent_out = w.ksampler(
+        model,
+        cond,
+        latent,
+        sampler=params.sampler or "uni_pc",
+        scheduler=params.scheduler or "simple",
+        steps=steps,
+        cfg=params.cfg,
+        denoise=1.0,
+        seed=seed,
+    )
+    frames = w.vae_decode(vae, latent_out)
+    w.send_image(frames)
+    return w
+
+
+def _wan_video_moe14b(
+    w: ComfyWorkflow,
+    images: ImageInput,
+    params: WanVideoInput,
+    seed: int,
+) -> ComfyWorkflow:
+    """Dual-model Wan 2.2 high/low noise I2V, FLF2V, or T2V graph."""
     if not params.high_noise_model or not params.low_noise_model:
         raise ValueError(
             "Wan 2.2 requires high-noise and low-noise diffusion models. "
@@ -2177,9 +2263,11 @@ def wan_video(
     vae = w.load_vae(params.vae)
     high = w.load_diffusion_model(params.high_noise_model)
     low = w.load_diffusion_model(params.low_noise_model)
-    for lora in params.loras:
+    for lora in params.loras_high:
         if lora.name:
             high = w.load_lora_model(high, lora.name, lora.strength)
+    for lora in params.loras_low:
+        if lora.name:
             low = w.load_lora_model(low, lora.name, lora.strength)
     high = w.model_sampling_sd3(high, params.shift)
     low = w.model_sampling_sd3(low, params.shift)
@@ -2238,6 +2326,10 @@ def wan_video(
     steps = max(2, params.steps)
     split = clamp(params.split_step, 1, steps - 1)
     w.sample_count += steps
+    sampler_high = params.sampler or "euler"
+    scheduler_high = params.scheduler or "simple"
+    sampler_low = params.sampler_low or sampler_high
+    scheduler_low = params.scheduler_low or scheduler_high
 
     latent1 = w.add(
         "KSamplerAdvanced",
@@ -2246,8 +2338,8 @@ def wan_video(
         noise_seed=seed,
         steps=steps,
         cfg=params.cfg,
-        sampler_name=params.sampler,
-        scheduler=params.scheduler,
+        sampler_name=sampler_high,
+        scheduler=scheduler_high,
         positive=cond2.positive,
         negative=cond2.negative,
         latent_image=latent,
@@ -2263,8 +2355,8 @@ def wan_video(
         noise_seed=0,
         steps=steps,
         cfg=params.cfg,
-        sampler_name=params.sampler,
-        scheduler=params.scheduler,
+        sampler_name=sampler_low,
+        scheduler=scheduler_low,
         positive=cond2.positive,
         negative=cond2.negative,
         latent_image=latent1,
