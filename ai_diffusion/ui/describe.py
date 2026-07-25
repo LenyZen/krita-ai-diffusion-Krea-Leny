@@ -2,6 +2,7 @@ from krita import Krita
 from PyQt5.QtCore import QMetaObject, Qt
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QCompleter,
     QHBoxLayout,
@@ -19,8 +20,8 @@ from ..localization import translate as _
 from ..model.clio_styles import CLIO_STYLE_NONE, clio_style_names, clio_style_prompt
 from ..model.describe_perspectives import Perspective
 from ..model.jobs import JobKind
-from ..model.model import DescribeLevel, DocumentModel
-from ..model.properties import Bind, Binding, bind, bind_combo
+from ..model.model import DescribeLevel, DescribeProvider, DocumentModel
+from ..model.properties import Bind, Binding, bind, bind_combo, bind_toggle
 from ..model.root import root
 from . import theme
 from .widget import ErrorBox, GenerateButton, WorkspaceSelectWidget
@@ -57,6 +58,32 @@ class DescribeWidget(QWidget):
         header_layout.addWidget(self.workspace_select)
         header_layout.addWidget(self.level_select, 1)
         layout.addLayout(header_layout)
+
+        self.provider_select = QComboBox(self)
+        self.provider_select.addItem(_("GGUF-VLM (Qwen2.5-VL GGUF)"), DescribeProvider.gguf_vlm)
+        self.provider_select.addItem(_("Qwen-VL (ComfyUI-QwenVL)"), DescribeProvider.qwenvl)
+        self.provider_select.addItem(_("Florence-2"), DescribeProvider.florence)
+        self.provider_select.addItem(_("Auto"), DescribeProvider.auto)
+        self.provider_select.setToolTip(
+            _(
+                "Vision backend for Describe / Enhance. "
+                "GGUF-VLM uses ComfyUI-GGUF-VLM with models in LLM/GGUF "
+                "(needs .gguf + matching mmproj)."
+            )
+        )
+        provider_layout = QHBoxLayout()
+        provider_layout.addWidget(QLabel(_("Backend") + ":", self))
+        provider_layout.addWidget(self.provider_select, 1)
+        layout.addLayout(provider_layout)
+
+        self.gguf_cuda_check = QCheckBox(_("Use CUDA for GGUF-VLM"), self)
+        self.gguf_cuda_check.setToolTip(
+            _(
+                "When unchecked, GGUF-VLM Describe runs on CPU (no llama-cpp CUDA). "
+                "Use this to A/B test speeds. Does not affect image Generate."
+            )
+        )
+        layout.addWidget(self.gguf_cuda_check)
 
         self.perspective_select = QComboBox(self)
         self.perspective_select.addItem(_("No perspective (plain)"), Perspective.none)
@@ -249,6 +276,8 @@ class DescribeWidget(QWidget):
             self._model_bindings = [
                 bind(model, "workspace", self.workspace_select, "value", Bind.one_way),
                 bind_combo(model.describe, "level", self.level_select),
+                bind_combo(model.describe, "provider", self.provider_select),
+                bind_toggle(model.describe, "gguf_use_cuda", self.gguf_cuda_check),
                 bind_combo(model.describe, "perspective", self.perspective_select),
                 bind(model.describe, "custom_perspective", self.custom_perspective_edit, "text"),
                 bind(
@@ -258,12 +287,14 @@ class DescribeWidget(QWidget):
                     model.describe, "can_generate", self.enhance_button, "enabled", Bind.one_way
                 ),
                 bind(model, "error", self.error_box, "error", Bind.one_way),
+                model.describe.provider_changed.connect(self._update_gguf_cuda_visibility),
                 model.describe.clio_style_changed.connect(self._sync_style_combo),
                 model.describe.draft_text_changed.connect(self._update_draft),
                 model.describe.result_text_changed.connect(self._update_text),
                 model.progress_changed.connect(self.update_progress),
             ]
             self.describe_button.model = model
+            self._update_gguf_cuda_visibility()
             self._sync_style_combo()
             self._update_draft()
             self._update_text()
@@ -271,6 +302,12 @@ class DescribeWidget(QWidget):
 
     def update_progress(self):
         self.progress_bar.setValue(int(max(self.model.progress, 0) * 100))
+
+    def _update_gguf_cuda_visibility(self, *_args):
+        provider = self.model.describe.provider
+        show = provider in (DescribeProvider.gguf_vlm, DescribeProvider.auto)
+        self.gguf_cuda_check.setVisible(show)
+        self.gguf_cuda_check.setEnabled(show)
 
     def describe(self):
         self.model.describe.describe_image()

@@ -75,6 +75,13 @@ optional_custom_nodes = [
         "90999af9c26e4a40927fb26c028ece8875ac25b3",
         ["NunchakuFluxDiTLoader"],
     ),
+    CustomNode(
+        "GGUF-VLM",
+        "ComfyUI-GGUF-VLM",
+        "https://github.com/walke2019/ComfyUI-GGUF-VLM",
+        "",
+        ["VisionModelLoader", "VisionLanguageNode"],
+    ),
 ]
 
 
@@ -144,7 +151,7 @@ class Arch(Enum):
             return Arch.zimage
         if string in {"ernie-image", "ernie_image"}:
             return Arch.ernie
-        if string == "krea2":
+        if string == "krea2" or (filename and "krea2" in filename):
             return Arch.krea2
         if string in {"wan", "wan2", "wan2.1", "wan2.2", "wan21", "wan22", "wan_2.1", "wan_2.2"}:
             return Arch.wan22
@@ -159,6 +166,9 @@ class Arch(Enum):
 
     @staticmethod
     def from_checkpoint_name(checkpoint: str):
+        cl = checkpoint.lower()
+        if "krea2" in cl:
+            return Arch.krea2
         if Arch.sdxl.matches(checkpoint):
             return Arch.sdxl
         return Arch.sd15

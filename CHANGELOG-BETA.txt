@@ -1,9 +1,11 @@
 ComfyforKrita / Krita AI Diffusion — Beta Changelog
 ====================================================
 
-1.52.1-beta.3  (2026-07-22)
+1.52.1-beta.3  (2026-07-25)
 ---------------------------
 Docs / packaging
+  * INSTALL-BETA: date bump; Animate quick-start calls out Video Settings… pop-out
+  * Dist zip rebuilt from current worktree (includes Wan pop-out + UTF-8 managed-server env)
   * INSTALL-BETA + README: Comic, SVG/CNC/Laser, and CRITICAL tooling-nodes
     load fix called out first (freeze/hang on model scan without the patch)
   * Direct Hugging Face resolve links for Krea 2, Florence-2, Wan T2V/I2V,
@@ -34,8 +36,12 @@ SVG / CNC / Laser
 Describe
   * Florence-2 captions; Clio style library; Enhance Description (Qwen-VL)
 
+Krea 2 defaults
+  * Default style: RAW fp8 + Turbo LoRA rank64 @ 0.6, 13 steps, CFG 2.0 (er_sde/simple)
+  * Styles: RAW+Turbo LoRA (sweet spot), TURBO checkpoint, RAW native 52-step
+
 Earlier (still in this fork vs stock 1.52.1)
-  * Krea 2 support + reference images + Turbo ER SDE preset
+  * Krea 2 Turbo + Krea 2 RAW styles (ER SDE presets); reference images
   * Augment workspace (regional edits)
   * Tooling-nodes scan patch (tooling-nodes-api.py) — apply on every install
   * Docker width / Animate combo label polish for narrow docks

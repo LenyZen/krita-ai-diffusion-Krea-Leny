@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from itertools import chain
+from pathlib import Path
 from typing import Any, ClassVar, cast
 
 from krita import Krita
-from PyQt5.QtCore import QEvent, QMetaObject, QSize, Qt, QUrl, pyqtSignal
+from PyQt5.QtCore import QEvent, QMetaObject, QObject, QSize, Qt, QUrl, pyqtSignal
 from PyQt5.QtGui import (
     QCloseEvent,
     QColor,
@@ -43,11 +44,13 @@ from PyQt5.QtWidgets import (
     QStyle,
     QStyleOption,
     QToolButton,
+    QVBoxLayout,
     QWidget,
     QWidgetAction,
 )
 
 from ..backend.client import filter_supported_styles, resolve_arch
+from ..backend.resources import Arch
 from ..backend.workflow import apply_strength, snap_to_percent
 from ..localization import translate as _
 from ..model.connection import ConnectionState
@@ -327,6 +330,71 @@ class QueueButton(QToolButton):
         _paint_tool_drop_down(self, self.text())
 
 
+def _krea2_variant_kind(style: Style, client) -> str:
+    """Detect turbo vs raw. Prefer the active checkpoint, then sampler, then style name."""
+    ckpt = ""
+    if client is not None:
+        try:
+            ckpt = style.preferred_checkpoint(client.models.checkpoints.keys())
+        except Exception:
+            ckpt = ""
+    if ckpt == "not-found":
+        ckpt = ""
+    short = Path(ckpt.replace("\\", "/")).name if ckpt else ""
+
+    def kind_from(text: str) -> str | None:
+        t = text.lower()
+        # Check raw before turbo so names like "…" never collide; paths are distinct.
+        if "raw" in t:
+            return "raw"
+        if "turbo" in t:
+            return "turbo"
+        return None
+
+    return (
+        kind_from(short)
+        or kind_from(style.sampler or "")
+        or kind_from(style.name)
+        or kind_from(style.filename)
+        or ""
+    )
+
+
+def _krea2_has_turbo_lora(style: Style) -> bool:
+    for lora in style.loras or []:
+        if not lora.get("enabled", True):
+            continue
+        name = str(lora.get("name", "")).lower()
+        if "turbo_lora" in name or "turbo-lora" in name:
+            return True
+    return False
+
+
+def _krea2_variant_badge(style: Style, client) -> str:
+    """Short line so Turbo vs RAW is obvious when a Krea 2 style is selected."""
+    ckpt = ""
+    if client is not None:
+        try:
+            ckpt = style.preferred_checkpoint(client.models.checkpoints.keys())
+        except Exception:
+            ckpt = ""
+    if ckpt == "not-found":
+        ckpt = ""
+    short = Path(ckpt.replace("\\", "/")).name if ckpt else ""
+    kind = _krea2_variant_kind(style, client)
+    if kind == "turbo":
+        tip = _("Active: Krea 2 TURBO — fast distilled (≈12 steps, CFG ~1.2)")
+    elif kind == "raw" and _krea2_has_turbo_lora(style):
+        tip = _("Active: Krea 2 RAW + Turbo LoRA — sweet spot (≈13 steps, CFG ~2, LoRA 0.6)")
+    elif kind == "raw":
+        tip = _("Active: Krea 2 RAW native — base model (≈52 steps, CFG ~3.5)")
+    else:
+        tip = _("Active: Krea 2")
+    if short:
+        tip += f" · {short}"
+    return tip
+
+
 class StyleSelectWidget(QWidget):
     value_changed = pyqtSignal(Style)
     quality_changed = pyqtSignal(SamplingQuality)
@@ -335,36 +403,50 @@ class StyleSelectWidget(QWidget):
         super().__init__(parent)
         self._styles: list[Style] = []
         self._value = Styles.list().default
+        self._bound_style: Style | None = None
+        self._style_changed_conn: QMetaObject.Connection | None = None
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.setLayout(layout)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
 
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
         self._combo = QComboBox(self)
-        self.update_styles()
         self._combo.currentIndexChanged.connect(self.change_style)
-        layout.addWidget(self._combo, 3)
+        row.addWidget(self._combo, 3)
 
         if show_quality:
             self._quality_combo = QComboBox(self)
             self._quality_combo.addItem(_("Fast"), SamplingQuality.fast.value)
             self._quality_combo.addItem(_("Quality"), SamplingQuality.quality.value)
             self._quality_combo.currentIndexChanged.connect(self.change_quality)
-            layout.addWidget(self._quality_combo, 1)
+            row.addWidget(self._quality_combo, 1)
 
         settings_btn = QToolButton(self)
         settings_btn.setIcon(theme.icon("settings"))
         settings_btn.setAutoRaise(True)
         settings_btn.clicked.connect(self.show_settings)
-        layout.addWidget(settings_btn)
+        row.addWidget(settings_btn)
+        outer.addLayout(row)
+
+        self._variant_badge = QLabel("", self)
+        self._variant_badge.setWordWrap(True)
+        self._variant_badge.setStyleSheet(f"color: {theme.grey}; font-weight: 600;")
+        self._variant_badge.hide()
+        outer.addWidget(self._variant_badge)
 
         Styles.list().changed.connect(self.update_styles)
         Styles.list().name_changed.connect(self.update_styles)
         root.connection.state_changed.connect(self.update_styles)
         settings.changed.connect(self._on_settings_changed)
+        self._bind_style_signals(self._value)
+        self.update_styles()
+        self._refresh_variant_badge()
 
     def update_styles(self):
         if root.connection.state is not ConnectionState.connected:
+            self._refresh_variant_badge()
             return
         client = root.connection.client_if_connected
         filtered = filter_supported_styles(Styles.list().filtered(), client)
@@ -384,7 +466,12 @@ class StyleSelectWidget(QWidget):
             for style in remaining:
                 icon = theme.checkpoint_icon(resolve_arch(style, client))
                 self._combo.addItem(icon, style.name, style.filename)
-            self._combo.setCurrentText(self._value.name)
+            idx = self._combo.findData(self._value.filename)
+            if idx >= 0:
+                self._combo.setCurrentIndex(idx)
+            else:
+                self._combo.setCurrentText(self._value.name)
+        self._refresh_variant_badge()
 
     def change_style(self):
         filename = self._combo.currentData()
@@ -392,8 +479,11 @@ class StyleSelectWidget(QWidget):
             return  # separator item selected
         style = next((s for s in self._styles if s.filename == filename), None)
         if style is None or style == self._value:
+            self._refresh_variant_badge()
             return
         self._value = style
+        self._bind_style_signals(style)
+        self._refresh_variant_badge()
         self.value_changed.emit(style)
 
     def change_quality(self):
@@ -404,10 +494,50 @@ class StyleSelectWidget(QWidget):
         if "recent_styles" in name:
             self.update_styles()
 
+    def _bind_style_signals(self, style: Style):
+        """Keep the Turbo/RAW badge in sync when Style Settings edits the model/sampler."""
+        if self._style_changed_conn is not None:
+            QObject.disconnect(self._style_changed_conn)
+            self._style_changed_conn = None
+        elif self._bound_style is not None:
+            try:
+                self._bound_style.changed.disconnect(self._on_bound_style_changed)
+            except TypeError:
+                pass
+        self._bound_style = style
+        self._style_changed_conn = style.changed.connect(self._on_bound_style_changed)
+
+    def _on_bound_style_changed(self, *_args):
+        self._refresh_variant_badge()
+
+    def _refresh_variant_badge(self):
+        if not hasattr(self, "_variant_badge"):
+            return
+        client = root.connection.client_if_connected
+        arch = resolve_arch(self._value, client)
+        if arch is Arch.krea2:
+            self._variant_badge.setText(_krea2_variant_badge(self._value, client))
+            self._variant_badge.setToolTip(
+                _(
+                    "Default: RAW checkpoint + Turbo LoRA (0.6) at ~13 steps / CFG 2. "
+                    "Turbo = distilled checkpoint. RAW native = base without LoRA (~52 steps)."
+                )
+            )
+            self._variant_badge.show()
+        else:
+            self._variant_badge.clear()
+            self._variant_badge.hide()
+
     def show_settings(self):
         from .settings import SettingsDialog
 
         SettingsDialog.instance().show(self._value)
+        # Non-modal dialog — refresh again when focus returns / after edits save
+        self._refresh_variant_badge()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh_variant_badge()
 
     @property
     def value(self):
@@ -417,11 +547,15 @@ class StyleSelectWidget(QWidget):
     def value(self, style: Style):
         if style != self._value:
             self._value = style
+            self._bind_style_signals(style)
             if style not in self._styles:
                 self.update_styles()
             else:
                 idx = self._combo.findData(style.filename)
                 self._combo.setCurrentIndex(idx)
+            self._refresh_variant_badge()
+        else:
+            self._refresh_variant_badge()
 
 
 class PromptHighlighter(QSyntaxHighlighter):

@@ -217,7 +217,8 @@ class DocumentModel(QObject, ObservableProperties):
         if client := self._connection.client_if_connected:
             styles = filter_supported_styles(Styles.list().filtered(), client)
             if self.style not in styles and len(styles) > 0:
-                self.style = styles[0]
+                preferred = Styles.list().default
+                self.style = preferred if preferred in styles else styles[0]
             if self.upscale.upscaler == "":
                 self.upscale.upscaler = client.models.default_upscaler
 
@@ -1282,10 +1283,31 @@ class DescribeLevel(Enum):
     mixed = "prompt_gen_mixed_caption_plus"
 
 
+class DescribeProvider(Enum):
+    """Which vision backend Describe / Enhance should use."""
+
+    auto = "auto"
+    gguf_vlm = "gguf_vlm"  # ComfyUI-GGUF-VLM (Qwen2.5-VL GGUF)
+    qwenvl = "qwenvl"  # ComfyUI-QwenVL (1038lab)
+    florence = "florence"  # ComfyUI-Florence2
+
+
+# Preferred GGUF filenames for the parallel Describe path (models/LLM/GGUF).
+_GGUF_VLM_PREFERRED = (
+    "Qwen2.5-VL-7B-Instruct-abliterated.Q4_K_M.gguf",
+    "Qwen2.5-VL-7B-Instruct-abliterated.Q8_0.gguf",
+    "Qwen2.5-VL-7B-Instruct-Abliterated.Q4_K_M.gguf",
+    "Qwen2.5-VL-7B-Instruct-Abliterated.Q8_0.gguf",
+)
+_GGUF_VLM_MMPROJ = "mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf"
+
+
 class DescribeWorkspace(QObject, ObservableProperties):
     """Generates a text description of the active layer using a vision-language model."""
 
     level = Property(DescribeLevel.extensive, persist=True)
+    provider = Property(DescribeProvider.gguf_vlm, persist=True)
+    gguf_use_cuda = Property(True, persist=True)
     perspective = Property(Perspective.none, persist=True)
     custom_perspective = Property("", persist=True)
     clio_style = Property(CLIO_STYLE_NONE, persist=True)
@@ -1294,6 +1316,8 @@ class DescribeWorkspace(QObject, ObservableProperties):
     can_generate = Property(True)
 
     level_changed = pyqtSignal(DescribeLevel)
+    provider_changed = pyqtSignal(DescribeProvider)
+    gguf_use_cuda_changed = pyqtSignal(bool)
     perspective_changed = pyqtSignal(Perspective)
     custom_perspective_changed = pyqtSignal(str)
     clio_style_changed = pyqtSignal(str)
@@ -1317,6 +1341,42 @@ class DescribeWorkspace(QObject, ObservableProperties):
             return "", ""
         return name, prompt
 
+    def _resolve_describe_backend(self, client: Client, *, need_instruction: bool):
+        """Pick provider + model for Describe / Enhance based on the UI provider setting."""
+        vram_gb = client.device_info.vram
+        choice = self.provider
+
+        def try_gguf():
+            model_name = self.find_gguf_vlm_model(client)
+            if model_name:
+                return "gguf_vlm", model_name, "", _GGUF_VLM_MMPROJ
+            return None
+
+        def try_qwen():
+            model_name = self.find_qwenvl_model(client, vram_gb)
+            if model_name:
+                return "qwenvl", model_name, self._qwenvl_quantization(model_name, vram_gb), ""
+            return None
+
+        def try_florence():
+            model_name = self.find_caption_model(client)
+            if model_name:
+                return "florence", model_name, "", ""
+            return None
+
+        if choice is DescribeProvider.gguf_vlm:
+            return try_gguf()
+        if choice is DescribeProvider.qwenvl:
+            return try_qwen()
+        if choice is DescribeProvider.florence:
+            return try_florence()
+
+        # Auto: prefer GGUF-VLM when available, then QwenVL, then Florence.
+        # Tags without Clio stay on Florence when no instruction VLM is needed.
+        if need_instruction:
+            return try_gguf() or try_qwen() or try_florence()
+        return try_florence() or try_gguf() or try_qwen()
+
     def describe_image(self):
         model = ensure(self._model())
         ok, msg = model.document.check_color_mode()
@@ -1325,30 +1385,41 @@ class DescribeWorkspace(QObject, ObservableProperties):
             return
         client = model._connection.client
         style_name, style_prompt = self._clio_args()
-        # Tag output doesn't benefit from prose enrichment, always use Florence-2 for it —
-        # unless a Clio style is selected (needs Qwen instruction following).
-        use_qwen = self.level is not DescribeLevel.tags or bool(style_prompt)
-        vram_gb = client.device_info.vram
-        qwen_model = self.find_qwenvl_model(client, vram_gb) if use_qwen else None
-        if style_prompt and qwen_model is None:
-            model.report_error(
-                _("Clio art styles need Qwen-VL.")
-                + " "
-                + _("Install the ComfyUI-QwenVL node pack on the server, or clear the Style dropdown.")
-            )
-            return
-        caption_model = None
-        if qwen_model is None:
-            caption_model = self.find_caption_model(client)
-            if caption_model is None:
+        need_instruction = (
+            self.provider is not DescribeProvider.florence
+            and (self.level is not DescribeLevel.tags or bool(style_prompt) or self.provider is DescribeProvider.gguf_vlm)
+        )
+        if self.provider is DescribeProvider.auto:
+            need_instruction = self.level is not DescribeLevel.tags or bool(style_prompt)
+
+        backend = self._resolve_describe_backend(client, need_instruction=need_instruction)
+        if backend is None:
+            if self.provider is DescribeProvider.gguf_vlm:
+                model.report_error(
+                    _("GGUF-VLM Describe needs ComfyUI-GGUF-VLM and a Qwen2.5-VL GGUF model.")
+                    + " "
+                    + _(
+                        "Place the .gguf + mmproj in models/LLM/GGUF "
+                        "(not LLM/Qwen-VL), then restart the server."
+                    )
+                )
+            elif style_prompt:
+                model.report_error(
+                    _("Clio art styles need an instruction VLM (GGUF-VLM or Qwen-VL).")
+                    + " "
+                    + _("Install the node pack on the server, or clear the Style dropdown.")
+                )
+            else:
                 model.report_error(
                     _("No caption model found.")
                     + " "
                     + _(
-                        "The server needs the ComfyUI-Florence2 node package and a Florence-2 model in the models/LLM folder."
+                        "Install ComfyUI-GGUF-VLM + Qwen2.5-VL GGUF, ComfyUI-QwenVL, "
+                        "or Florence-2 under models/LLM."
                     )
                 )
-                return
+            return
+        provider, caption_model, quantization, mmproj = backend
         try:
             layer = model.layers.active
             bounds = layer.compute_bounds()
@@ -1356,7 +1427,7 @@ class DescribeWorkspace(QObject, ObservableProperties):
                 model.report_error(_("The active layer is empty, there is nothing to describe."))
                 return
             image = layer.get_pixels(bounds)
-            if qwen_model is not None:
+            if provider in ("qwenvl", "gguf_vlm"):
                 instruction = build_instruction(
                     self.perspective,
                     self.level.value,
@@ -1364,13 +1435,20 @@ class DescribeWorkspace(QObject, ObservableProperties):
                     style_name,
                     style_prompt,
                 )
-                quantization = self._qwenvl_quantization(qwen_model, vram_gb)
+                gguf_device = "Auto" if self.gguf_use_cuda else "CPU"
                 input = workflow.prepare_describe(
-                    image, self.level.value, qwen_model, "qwenvl", instruction, quantization
+                    image,
+                    self.level.value,
+                    caption_model,
+                    provider,
+                    instruction,
+                    quantization,
+                    mmproj,
+                    gguf_device=gguf_device,
                 )
                 self._enrich_output = False
             else:
-                input = workflow.prepare_describe(image, self.level.value, ensure(caption_model))
+                input = workflow.prepare_describe(image, self.level.value, caption_model)
                 self._enrich_output = self.level is not DescribeLevel.tags
             job = model.jobs.add(JobKind.describe, JobParams(bounds, f"[Describe] {layer.name}"))
         except Exception as e:
@@ -1382,7 +1460,7 @@ class DescribeWorkspace(QObject, ObservableProperties):
         return job
 
     def enhance_description(self):
-        """Expand the user's draft with Qwen-VL, grounded in the active layer image."""
+        """Expand the user's draft with an instruction VLM, grounded in the active layer image."""
         model = ensure(self._model())
         draft = self.draft_text.strip()
         if not draft:
@@ -1393,18 +1471,21 @@ class DescribeWorkspace(QObject, ObservableProperties):
             model.report_error(msg)
             return
         client = model._connection.client
-        vram_gb = client.device_info.vram
-        qwen_model = self.find_qwenvl_model(client, vram_gb)
-        if qwen_model is None:
+        # Enhance always needs an instruction-following VLM.
+        if self.provider is DescribeProvider.florence:
             model.report_error(
-                _("Enhance Description needs Qwen-VL.")
-                + " "
-                + _(
-                    "Install the ComfyUI-QwenVL node pack on the server"
-                    " (same tip as perspective re-description)."
-                )
+                _("Enhance Description needs GGUF-VLM or Qwen-VL — Florence cannot follow a draft.")
             )
             return
+        backend = self._resolve_describe_backend(client, need_instruction=True)
+        if backend is None or backend[0] == "florence":
+            model.report_error(
+                _("Enhance Description needs GGUF-VLM or Qwen-VL.")
+                + " "
+                + _("Install ComfyUI-GGUF-VLM (Qwen2.5-VL GGUF) or ComfyUI-QwenVL on the server.")
+            )
+            return
+        provider, caption_model, quantization, mmproj = backend
         try:
             layer = model.layers.active
             bounds = layer.compute_bounds()
@@ -1423,9 +1504,16 @@ class DescribeWorkspace(QObject, ObservableProperties):
                 style_name,
                 style_prompt,
             )
-            quantization = self._qwenvl_quantization(qwen_model, vram_gb)
+            gguf_device = "Auto" if self.gguf_use_cuda else "CPU"
             input = workflow.prepare_describe(
-                image, self.level.value, qwen_model, "qwenvl", instruction, quantization
+                image,
+                self.level.value,
+                caption_model,
+                provider,
+                instruction,
+                quantization,
+                mmproj,
+                gguf_device=gguf_device,
             )
             self._enrich_output = False
             job_params = JobParams(bounds, f"[Enhance] {layer.name}")
@@ -1469,6 +1557,42 @@ class DescribeWorkspace(QObject, ObservableProperties):
             return ("promptgen" not in name, "large" not in name, name)
 
         return sorted(candidates, key=preference)[0]
+
+    @staticmethod
+    def find_gguf_vlm_model(client: Client) -> str | None:
+        """Detect ComfyUI-GGUF-VLM and pick a preferred Qwen2.5-VL GGUF filename.
+
+        The loader combo is often frontend-dynamic (empty in object_info), so we
+        also accept a known preferred filename when the node pack is installed.
+        Files must live under models/LLM/GGUF (see ComfyUI-GGUF-VLM docs).
+        """
+        if "VisionModelLoader" not in client.models.node_inputs:
+            return None
+        if "VisionLanguageNode" not in client.models.node_inputs:
+            return None
+        options = [
+            o
+            for o in client.models.node_inputs.options("VisionModelLoader", "model")
+            if o and not str(o).startswith("---")
+        ]
+        for preferred in _GGUF_VLM_PREFERRED:
+            if preferred in options:
+                return preferred
+        # Prefer any local abliterated / qwen2.5-vl 7b gguf the server lists.
+        ranked = sorted(
+            options,
+            key=lambda n: (
+                "abliterated" not in n.lower(),
+                "qwen2.5" not in n.lower() and "qwen2_5" not in n.lower(),
+                "7b" not in n.lower(),
+                "q4" not in n.lower(),
+                n.lower(),
+            ),
+        )
+        if ranked:
+            return ranked[0]
+        # Node pack present but combo empty (dynamic JS list) — use preferred name.
+        return _GGUF_VLM_PREFERRED[0]
 
     @staticmethod
     def find_qwenvl_model(client: Client, vram_gb: int = 0) -> str | None:

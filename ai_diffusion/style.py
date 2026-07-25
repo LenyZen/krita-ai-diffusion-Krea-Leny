@@ -276,6 +276,10 @@ class Styles(QObject):
 
     @property
     def default(self):
+        # Prefer Krea 2 RAW + Turbo LoRA sweet spot when present (this fork's day-to-day default).
+        for key in ("built-in/krea2-raw.json", "krea2-raw.json"):
+            if style := self.find(key):
+                return style
         return self[0]
 
     def create(self, filename="style.json", checkpoint: str = "", copy_from: Style | None = None):

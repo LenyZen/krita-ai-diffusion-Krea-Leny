@@ -1,0 +1,27 @@
+{
+    "name": "Krea 2 · RAW native (52-step, no LoRA)",
+    "version": 2,
+    "architecture": "krea2",
+    "checkpoints": [
+        "krea2_raw_fp8_scaled.safetensors",
+        "krea2_raw_bf16.safetensors",
+        "krea2_raw_int8_convrot.safetensors",
+        "krea2_raw"
+    ],
+    "loras": [],
+    "style_prompt": "",
+    "negative_prompt": "",
+    "vae": "Checkpoint Default",
+    "clip_skip": 0,
+    "v_prediction_zsnr": false,
+    "rescale_cfg": 0.7,
+    "self_attention_guidance": false,
+    "preferred_resolution": 1024,
+    "linked_edit_style": "",
+    "sampler": "Krea 2 RAW - ER SDE",
+    "sampler_steps": 52,
+    "cfg_scale": 3.5,
+    "live_sampler": "Krea 2 RAW - ER SDE",
+    "live_sampler_steps": 28,
+    "live_cfg_scale": 3.5
+}

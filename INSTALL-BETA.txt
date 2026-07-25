@@ -5,7 +5,7 @@
 
 Plugin version: 1.52.1-beta.3
 Based on: Acly/krita-ai-diffusion v1.52.1
-Date: 2026-07-21
+Date: 2026-07-25
 
 This is a modified Krita AI Diffusion plugin for beta testing. Please
 report bugs, confusing UI, and missing docs — thank you!
@@ -27,7 +27,8 @@ report bugs, confusing UI, and missing docs — thank you!
   * SVG / CNC / Laser workspace — silhouette, line art, or limited-
     color images; Export SVG or Add Vector Layer in Krita
   * Animate (Wan) workspace — Wan 2.2 T2V / I2V / FLF2V, Extend, Stitch,
-    progress hints, sampler presets, up to 4 Video LoRAs (High/Low/Both target)
+    progress hints, sampler presets, up to 4 Video LoRAs (High/Low/Both target),
+    and a Video Settings… pop-out (presets / models / sampler / LoRAs)
   * SeedVR Enhance workspace — SeedVR2 diffusion upscale (separate
     from the existing ESRGAN Upscale tab)
   * "Krea 2 Turbo - ER SDE" sampler preset
@@ -150,12 +151,22 @@ Put each file in the folder shown relative to your ComfyUI root.
 
 --- Krea 2 (Generate / Augment / refs) ---
   Repo: https://huggingface.co/Comfy-Org/Krea-2
+  Same TE + VAE for Turbo and RAW. Default style: RAW + Turbo LoRA sweet spot.
 
   → models\diffusion_models\
-    12GB (nvfp4):
-      https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_nvfp4.safetensors
-    16GB+ (fp8):
-      https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_fp8_scaled.safetensors
+    RAW (default checkpoint — pair with Turbo LoRA):
+      fp8 (typical):
+        https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_raw_fp8_scaled.safetensors
+      bf16 (heavy):
+        https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_raw_bf16.safetensors
+    Turbo (optional distilled checkpoint — 8 steps, CFG 1):
+      12GB (nvfp4):
+        https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_nvfp4.safetensors
+      16GB+ (fp8):
+        https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_fp8_scaled.safetensors
+
+  → models\loras\  (required for default RAW sweet spot)
+    https://huggingface.co/Comfy-Org/Krea-2/resolve/main/loras/krea2_turbo_lora_rank_64_bf16.safetensors
 
   → models\text_encoders\
     https://huggingface.co/Comfy-Org/Krea-2/resolve/main/text_encoders/qwen3vl_4b_fp8_scaled.safetensors
@@ -247,9 +258,12 @@ TIP: external drives via ComfyUI\extra_model_paths.yaml:
 ---------------------------------------------------------------------
 
 Generate (Krea 2)
-  Style settings → new style → krea2_turbo_nvfp4
-  Sampler preset: "Krea 2 Turbo - ER SDE" (8 steps, CFG 1.0)
-  First run after server start is slow (encoder load); then faster.
+  Default style → “Krea 2 · RAW + Turbo LoRA (sweet spot)”
+    RAW fp8 + krea2_turbo_lora_rank_64_bf16 @ 0.6 · er_sde/simple · 13 steps · CFG 2.0
+    Alt quality preset: “Krea 2 RAW + Turbo LoRA - Euler beta”
+  Also: “Krea 2 · TURBO …” (distilled 8-step) and “Krea 2 · RAW native …” (52-step, no LoRA)
+  Badge under the style picker shows which path is active.
+  Same qwen3vl TE + qwen_image VAE for all. First run after server start is slow.
 
 Describe
   Detail level → Generate Description
@@ -278,6 +292,8 @@ SVG / CNC / Laser
   Tracing uses bundled potrace / vtracer helpers when available.
 
 Animate (Wan)
+  Use Video Settings… for presets, model picks, sampler/steps/CFG/shift, and
+  Video LoRAs (keeps the main dock compact).
   Presets: 5B Config 1–5 and 14B Config 1–5 (Mode picks I2V vs T2V weights/LoRAs).
   14B Low sampler can differ from High (Config 5 asymmetric). Keep split ~50/50
   unless Config 5 (12/20). RES4LYF/ClownShark needed for res_2m / bong_tangent / beta57.

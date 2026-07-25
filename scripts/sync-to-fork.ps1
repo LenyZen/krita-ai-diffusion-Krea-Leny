@@ -15,7 +15,7 @@
 
 param(
     [string]$Source = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
-    [string]$Dest = "D:\krita-ai-diffusion-Krea-Leny",
+    [string]$Dest = "E:\krita-ai-diffusion-Krea-Leny",
     [switch]$DryRun,
     [switch]$Commit,
     [switch]$Push,

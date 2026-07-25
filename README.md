@@ -12,7 +12,7 @@
 * **Augment** regional edits
 * **Comic** — multi-panel page layouts, character/scene plates, draft → refine → lock → assemble
 * **SVG / CNC / Laser** — silhouette / line art / limited-color gen, Export SVG or Add Vector Layer
-* **Animate (Wan 2.2)** — T2V / I2V / FLF2V, Extend, Stitch, sampler presets, Video LoRAs
+* **Animate (Wan 2.2)** — T2V / I2V / FLF2V, Extend, Stitch, sampler presets, Video LoRAs, Video Settings… pop-out
 * **SeedVR Enhance** workspace (separate from ESRGAN Upscale)
 * Windows UTF-8 env for managed ComfyUI (avoids SeedVR emoji console crash)
 
@@ -48,7 +48,7 @@ The main goals of this project are:
 * **Augment**: Up to 10 rectangular region edits on a layer
 * **Comic**: Page layouts, characters/scenes/panel beats, generate, lock panels, assemble full page
 * **SVG / CNC / Laser**: Vector-friendly generation; export SVG or insert a Krita vector layer
-* **Animate (Wan 2.2)**: T2V / I2V / FLF2V, Extend, Stitch, Video LoRAs, sampler presets
+* **Animate (Wan 2.2)**: T2V / I2V / FLF2V, Extend, Stitch, Video LoRAs, sampler presets, Video Settings… pop-out
 * **SeedVR Enhance**: SeedVR2 diffusion upscale (separate from ESRGAN Upscale)
 
 ### Upstream (Acly)

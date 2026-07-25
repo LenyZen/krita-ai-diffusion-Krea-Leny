@@ -1,11 +1,14 @@
 {
-    "name": "Krea 2 Turbo",
+    "name": "Krea 2 · TURBO (fast 8-step)",
     "version": 2,
-    "architecture": "auto",
+    "architecture": "krea2",
     "checkpoints": [
-        "krea2_turbo_bf16.safetensors",
+        "krea2_turbo_nvfp4.safetensors",
         "krea2_turbo_fp8_scaled.safetensors",
-        "krea2_turbo_nvfp4.safetensors"
+        "krea2_turbo_bf16.safetensors",
+        "krea2_turbo_mxfp8.safetensors",
+        "krea2_turbo_int8_convrot.safetensors",
+        "krea2_turbo"
     ],
     "loras": [],
     "style_prompt": "",
@@ -17,10 +20,10 @@
     "self_attention_guidance": false,
     "preferred_resolution": 0,
     "linked_edit_style": "",
-    "sampler": "Flux - Euler simple",
-    "sampler_steps": 8,
-    "cfg_scale": 1.0,
-    "live_sampler": "Flux - Euler simple",
-    "live_sampler_steps": 8,
-    "live_cfg_scale": 1.0
+    "sampler": "Krea 2 Turbo - Euler simple",
+    "sampler_steps": 12,
+    "cfg_scale": 1.2,
+    "live_sampler": "Krea 2 Turbo - Euler simple",
+    "live_sampler_steps": 12,
+    "live_cfg_scale": 1.2
 }

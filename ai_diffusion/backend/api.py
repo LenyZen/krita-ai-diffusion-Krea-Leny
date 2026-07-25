@@ -260,9 +260,11 @@ class CustomStyleInput:
 class DescribeInput:
     task: str = "more_detailed_caption"  # Florence2Run task name
     model: str = ""  # preferred model folder name, empty = auto-select
-    provider: str = "florence"  # "florence" or "qwenvl"
-    instruction: str = ""  # custom prompt for instruction-following VLM (qwenvl)
+    provider: str = "florence"  # "florence" | "qwenvl" | "gguf_vlm"
+    instruction: str = ""  # custom prompt for instruction-following VLM (qwenvl / gguf_vlm)
     quantization: str = ""  # qwenvl on-the-fly quantization, empty = server default
+    mmproj: str = ""  # optional mmproj filename for gguf_vlm VisionModelLoader
+    gguf_device: str = "Auto"  # VisionModelLoader device: "Auto" (CUDA) or "CPU"
 
 
 @dataclass

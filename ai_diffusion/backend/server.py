@@ -491,6 +491,10 @@ class Server:
 
             args = ["-su", "main.py"]
             env = {}
+            # Force UTF-8 I/O so custom nodes that print non-ASCII/emoji in
+            # tracebacks don't crash startup on Windows (cp1252 default).
+            env["PYTHONUTF8"] = "1"
+            env["PYTHONIOENCODING"] = "utf-8"
             if self.backend is ServerBackend.cpu:
                 args.append("--cpu")
             elif self.backend is ServerBackend.directml:

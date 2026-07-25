@@ -1364,6 +1364,46 @@ class ComfyWorkflow:
         response = self.add("AILab_QwenVL", 1, **args)
         return self.add("ETN_KritaSendText", 1, value=response, name="Description", type="text")
 
+    def describe_image_gguf_vlm(
+        self,
+        image: Output,
+        instruction: str,
+        model: str,
+        mmproj: str = "",
+        n_ctx: int = 2048,
+        device: str = "Auto",
+    ):
+        # Parallel Describe path via ComfyUI-GGUF-VLM (walke2019):
+        # VisionModelLoader (GGUF) → VisionLanguageNode + IMAGE → MemoryManager → text.
+        # n_ctx kept modest so captions don't reserve a huge KV cache on 12GB GPUs.
+        # VisionLanguageNode is patched to unload after describe; MemoryManager is a backup.
+        # device="CPU" disables llama-cpp CUDA for A/B speed tests (Describe only).
+        loader_args: dict[str, Any] = dict(model=model, n_ctx=n_ctx, device=device or "Auto")
+        if mmproj:
+            loader_args["mmproj_file"] = mmproj
+        vision_model = self.add("VisionModelLoader", 1, **loader_args)
+        response = self.add(
+            "VisionLanguageNode",
+            1,
+            model=vision_model,
+            prompt=instruction,
+            max_tokens=1024,
+            temperature=0.3,
+            top_p=0.9,
+            top_k=40,
+            seed=1,
+            image=image,
+            system_prompt=(
+                "You are an expert image captioner for AI art prompts. "
+                "Follow the user instruction carefully. Output only the description, "
+                "with no preamble or explanation."
+            ),
+        )
+        # Full Cleanup after caption so Generate gets VRAM/RAM back.
+        if "MemoryManagerNode" in self.node_defs:
+            self.add("MemoryManagerNode", 1, action="Full Cleanup", trigger=response)
+        return self.add("ETN_KritaSendText", 1, value=response, name="Description", type="text")
+
     def send_image(self, image: Output):
         if self._run_mode is ComfyRunMode.runtime:
             return self.add("ETN_ReturnImage", 1, images=image)

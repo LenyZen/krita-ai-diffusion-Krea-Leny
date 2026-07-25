@@ -1963,16 +1963,24 @@ def prepare_describe(
     provider: str = "florence",
     instruction: str = "",
     quantization: str = "",
+    mmproj: str = "",
+    gguf_device: str = "Auto",
 ) -> WorkflowInput:
     i = WorkflowInput(WorkflowKind.describe)
-    # Qwen-VL activations scale with image tokens — keep inputs modest on consumer GPUs.
-    max_side = 1024 if provider == "qwenvl" else 2048
+    # Instruction VLMs scale with image tokens — keep inputs modest on consumer GPUs.
+    max_side = 1024 if provider in ("qwenvl", "gguf_vlm") else 2048
     if image.extent.longest_side > max_side:
         image = Image.scale_to_fit(image, Extent(max_side, max_side))
     i.images = ImageInput.from_extent(image.extent)
     i.images.initial_image = image
     i.describe = DescribeInput(
-        task=task, model=model, provider=provider, instruction=instruction, quantization=quantization
+        task=task,
+        model=model,
+        provider=provider,
+        instruction=instruction,
+        quantization=quantization,
+        mmproj=mmproj,
+        gguf_device=gguf_device,
     )
     return i
 
@@ -2008,6 +2016,14 @@ def describe(w: ComfyWorkflow, image: Image, params: DescribeInput):
     input_image = w.load_image(image)
     if params.provider == "qwenvl":
         w.describe_image_qwenvl(input_image, params.instruction, params.model, params.quantization)
+    elif params.provider == "gguf_vlm":
+        w.describe_image_gguf_vlm(
+            input_image,
+            params.instruction,
+            params.model,
+            mmproj=params.mmproj,
+            device=params.gguf_device or "Auto",
+        )
     else:
         w.describe_image(input_image, params.task, params.model)
     return w

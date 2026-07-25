@@ -378,10 +378,10 @@ class Settings(QObject):
     _recent_styles = Setting(
         "Recent Styles",
         [
-            "built-in/edit-flux2.json",
-            "built-in/anime-illustrious.json",
+            "built-in/krea2-raw.json",
+            "built-in/krea2-turbo.json",
+            "built-in/krea2-raw-native.json",
             "built-in/cinematic-photo-zimage.json",
-            "built-in/digital-artwork-xl.json",
         ],
     )
 

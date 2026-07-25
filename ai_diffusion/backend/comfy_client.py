@@ -170,6 +170,8 @@ class ComfyClient(Client):
         self._requests.add_header("skip_zrok_interstitial", "69420")
         if settings.server_authorization:
             self._requests.set_auth(settings.server_authorization)
+        # Track prior job so Describe → Generate can free VLM/diffusion residues.
+        self._last_job_kind: WorkflowKind | None = None
 
     async def connect(self):
         self.url = parse_url(self.url)
@@ -323,7 +325,13 @@ class ComfyClient(Client):
     async def _run_job(self, job: JobInfo):
         # Describe (especially Qwen-VL) often OOMs on 12 GB cards if Krea/diffusion
         # weights are still resident — unload first so the VLM can load.
-        if job.work.kind in (WorkflowKind.describe, WorkflowKind.seedvr):
+        # Also free when switching Describe → Generate: llama.cpp VRAM is invisible to
+        # torch and can leave the card thrashing until ComfyUI /free runs.
+        kind = job.work.kind
+        need_free = kind in (WorkflowKind.describe, WorkflowKind.seedvr)
+        if self._last_job_kind is WorkflowKind.describe and kind is not WorkflowKind.describe:
+            need_free = True
+        if need_free:
             await self.free_vram()
 
         workflow = create_workflow(job.work, self.models)
@@ -350,6 +358,7 @@ class ComfyClient(Client):
                 f"Submitted job {job.id} ({job.work.kind.name}, "
                 f"{job.sample_count} sampling steps)"
             )
+            self._last_job_kind = kind
             asyncio.create_task(self._watch_job_via_history(job.id))
         except Exception:
             self._waiting_job.clear()
@@ -419,6 +428,8 @@ class ComfyClient(Client):
                         if text_only:
                             # Describe jobs produce text output (already reported), no images.
                             await self._report(ClientEvent.finished, job_id, 1, result=result)
+                            # Free llama.cpp / diffusion residues so Generate is not starved.
+                            await self.free_vram()
                             continue
                         if len(images) == 0:
                             # It may happen if the entire execution is cached and no images are sent.

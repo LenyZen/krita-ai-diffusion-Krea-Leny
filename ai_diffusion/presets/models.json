@@ -411,6 +411,36 @@
           "sha256": "56c06ad6cb80941e8203d3e248a16ad1263499ba870f2c1931aa724fdc7c25d3"
         }
       ]
+    },
+    {
+      "id": "checkpoint-raw_fp8-krea2",
+      "name": "Krea 2 RAW [fp8]",
+      "files": [
+        {
+          "path": "models/diffusion_models/krea2_raw_fp8_scaled.safetensors",
+          "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_raw_fp8_scaled.safetensors"
+        }
+      ]
+    },
+    {
+      "id": "checkpoint-turbo_nvfp4-krea2",
+      "name": "Krea 2 Turbo [nvfp4]",
+      "files": [
+        {
+          "path": "models/diffusion_models/krea2_turbo_nvfp4.safetensors",
+          "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_nvfp4.safetensors"
+        }
+      ]
+    },
+    {
+      "id": "lora-turbo-krea2",
+      "name": "Krea 2 Turbo LoRA [rank 64]",
+      "files": [
+        {
+          "path": "models/loras/krea2_turbo_lora_rank_64_bf16.safetensors",
+          "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/loras/krea2_turbo_lora_rank_64_bf16.safetensors"
+        }
+      ]
     }
   ],
   "upscale": [
