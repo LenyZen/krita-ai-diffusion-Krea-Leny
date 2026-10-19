@@ -6,11 +6,13 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QCompleter,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -18,7 +20,8 @@ from PyQt5.QtWidgets import (
 
 from ..localization import translate as _
 from ..model.clio_styles import CLIO_STYLE_NONE, clio_style_names, clio_style_prompt
-from ..model.describe_perspectives import Perspective
+from ..model.describe_library import add_library_entry, find_library_text, load_library
+from ..model.describe_perspectives import Perspective, PromptLength, ShotScale, StyleLock
 from ..model.jobs import JobKind
 from ..model.model import DescribeLevel, DescribeProvider, DocumentModel
 from ..model.properties import Bind, Binding, bind, bind_combo, bind_toggle
@@ -37,10 +40,11 @@ class DescribeWidget(QWidget):
         super().__init__()
         self._model = root.active_model
         self._model_bindings = []
+        self._section_syncing = False
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 2, 4, 0)
-        self.setLayout(layout)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 2, 4, 0)
+        self.setLayout(root_layout)
 
         self.workspace_select = WorkspaceSelectWidget(self)
 
@@ -51,13 +55,23 @@ class DescribeWidget(QWidget):
         self.level_select.addItem(_("Extensive description"), DescribeLevel.extensive)
         self.level_select.addItem(_("Mixed caption"), DescribeLevel.mixed)
         self.level_select.setToolTip(
-            _("How detailed the generated image description should be.")
+            _("How detailed the generated image description should be (Florence task / tags mode).")
         )
 
         header_layout = QHBoxLayout()
         header_layout.addWidget(self.workspace_select)
         header_layout.addWidget(self.level_select, 1)
-        layout.addLayout(header_layout)
+        root_layout.addLayout(header_layout)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget(scroll)
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
+        scroll.setWidget(body)
+        root_layout.addWidget(scroll, 1)
 
         self.provider_select = QComboBox(self)
         self.provider_select.addItem(_("GGUF-VLM (Qwen2.5-VL GGUF)"), DescribeProvider.gguf_vlm)
@@ -84,6 +98,35 @@ class DescribeWidget(QWidget):
             )
         )
         layout.addWidget(self.gguf_cuda_check)
+
+        # Shot scale + prompt length (NO8D-inspired framing/budget)
+        self.shot_select = QComboBox(self)
+        self.shot_select.addItem(_("Match image (auto)"), ShotScale.auto)
+        self.shot_select.addItem(_("Extreme close-up"), ShotScale.extreme_closeup)
+        self.shot_select.addItem(_("Close-up"), ShotScale.closeup)
+        self.shot_select.addItem(_("Medium close-up"), ShotScale.medium_closeup)
+        self.shot_select.addItem(_("Medium"), ShotScale.medium)
+        self.shot_select.addItem(_("Full"), ShotScale.full)
+        self.shot_select.addItem(_("Extreme wide"), ShotScale.extreme_wide)
+        self.shot_select.setToolTip(
+            _("Framing distance for instruction VLMs. Guides how much environment vs subject detail.")
+        )
+
+        self.length_select = QComboBox(self)
+        self.length_select.addItem(_("Short (~100 words)"), PromptLength.short)
+        self.length_select.addItem(_("Standard (~200 words)"), PromptLength.standard)
+        self.length_select.addItem(_("Detailed (~400 words)"), PromptLength.detailed)
+        self.length_select.addItem(_("Extensive (multi-paragraph)"), PromptLength.extensive)
+        self.length_select.setToolTip(
+            _("Output length budget for GGUF-VLM / Qwen-VL. Overrides the Level length for those backends.")
+        )
+
+        framing_layout = QHBoxLayout()
+        framing_layout.addWidget(QLabel(_("Shot") + ":", self))
+        framing_layout.addWidget(self.shot_select, 1)
+        framing_layout.addWidget(QLabel(_("Length") + ":", self))
+        framing_layout.addWidget(self.length_select, 1)
+        layout.addLayout(framing_layout)
 
         self.perspective_select = QComboBox(self)
         self.perspective_select.addItem(_("No perspective (plain)"), Perspective.none)
@@ -119,8 +162,7 @@ class DescribeWidget(QWidget):
         )
 
         perspective_layout = QHBoxLayout()
-        perspective_label = QLabel(_("Perspective") + ":", self)
-        perspective_layout.addWidget(perspective_label)
+        perspective_layout.addWidget(QLabel(_("Perspective") + ":", self))
         perspective_layout.addWidget(self.perspective_select, 1)
         layout.addLayout(perspective_layout)
 
@@ -156,6 +198,21 @@ class DescribeWidget(QWidget):
         style_layout.addWidget(self.style_select, 1)
         layout.addLayout(style_layout)
 
+        self.style_lock_select = QComboBox(self)
+        self.style_lock_select.addItem(_("Blend with image medium"), StyleLock.blend)
+        self.style_lock_select.addItem(_("Keep image medium"), StyleLock.keep_medium)
+        self.style_lock_select.addItem(_("Force target style"), StyleLock.force_style)
+        self.style_lock_select.setToolTip(
+            _(
+                "Keep medium: preserve photo/paint/3D cues from the image. "
+                "Force style: rewrite medium language to match Clio / perspective."
+            )
+        )
+        lock_layout = QHBoxLayout()
+        lock_layout.addWidget(QLabel(_("Style lock") + ":", self))
+        lock_layout.addWidget(self.style_lock_select, 1)
+        layout.addLayout(lock_layout)
+
         self.style_preview = QLabel("", self)
         self.style_preview.setWordWrap(True)
         self.style_preview.setMaximumHeight(54)
@@ -184,6 +241,34 @@ class DescribeWidget(QWidget):
         )
         credit.setStyleSheet(f"color: {theme.grey}; font-size: 10px;")
         layout.addWidget(credit)
+
+        # Personal prompt library (lightweight; not NO8D XLSX)
+        layout.addWidget(QLabel(_("Prompt library"), self))
+        self.library_select = QComboBox(self)
+        self.library_select.setEditable(True)
+        self.library_select.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.library_select.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.library_select.setToolTip(_("Your saved prompt snippets. Type to filter by name."))
+        lib_completer = QCompleter([], self.library_select)
+        lib_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        lib_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        lib_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.library_select.setCompleter(lib_completer)
+        self._library_completer = lib_completer
+
+        self.library_insert_button = QPushButton(_("Insert"), self)
+        self.library_insert_button.setToolTip(_("Insert the selected snippet into Your draft."))
+        self.library_insert_button.clicked.connect(self._library_insert)
+        self.library_save_button = QPushButton(_("Save…"), self)
+        self.library_save_button.setToolTip(_("Save the current draft (or result) into your library."))
+        self.library_save_button.clicked.connect(self._library_save)
+
+        lib_row = QHBoxLayout()
+        lib_row.addWidget(self.library_select, 1)
+        lib_row.addWidget(self.library_insert_button)
+        lib_row.addWidget(self.library_save_button)
+        layout.addLayout(lib_row)
+        self._reload_library()
 
         info = QLabel(
             _("Analyzes the active layer and writes a text description of its content.")
@@ -221,7 +306,7 @@ class DescribeWidget(QWidget):
         self.enhance_button.setToolTip(
             _(
                 "Expand your draft with Qwen-VL, grounded in the active layer image. "
-                "Uses the same level and perspective settings as Describe."
+                "Uses the same level, shot, length, and style settings as Describe."
             )
         )
         self.enhance_button.clicked.connect(self.enhance)
@@ -244,8 +329,65 @@ class DescribeWidget(QWidget):
         self.result_edit.setPlaceholderText(
             _("The image description will appear here. You can edit it before using it.")
         )
+        self.result_edit.setMinimumHeight(90)
         self.result_edit.textChanged.connect(self._text_edited)
-        layout.addWidget(self.result_edit, 1)
+        layout.addWidget(self.result_edit)
+
+        # Sectioned prompt fields
+        layout.addWidget(QLabel(_("Prompt sections"), self))
+        sections_hint = QLabel(
+            _("Edit pieces separately, then Assemble into Result. Describe/Enhance fill these when the VLM returns labeled sections."),
+            self,
+        )
+        sections_hint.setWordWrap(True)
+        sections_hint.setStyleSheet(f"color: {theme.grey}; font-size: 11px;")
+        layout.addWidget(sections_hint)
+
+        self.section_subject = QPlainTextEdit(self)
+        self.section_subject.setPlaceholderText(_("Subject"))
+        self.section_subject.setMaximumHeight(64)
+        self.section_setting = QPlainTextEdit(self)
+        self.section_setting.setPlaceholderText(_("Setting"))
+        self.section_setting.setMaximumHeight(48)
+        self.section_lighting = QPlainTextEdit(self)
+        self.section_lighting.setPlaceholderText(_("Lighting"))
+        self.section_lighting.setMaximumHeight(48)
+        self.section_style = QPlainTextEdit(self)
+        self.section_style.setPlaceholderText(_("Style / medium"))
+        self.section_style.setMaximumHeight(48)
+        self.section_tags = QLineEdit(self)
+        self.section_tags.setPlaceholderText(_("Tags (comma-separated)"))
+
+        for w in (
+            self.section_subject,
+            self.section_setting,
+            self.section_lighting,
+            self.section_style,
+        ):
+            w.textChanged.connect(self._sections_edited)
+        self.section_tags.textChanged.connect(self._sections_edited)
+
+        layout.addWidget(QLabel(_("Subject"), self))
+        layout.addWidget(self.section_subject)
+        layout.addWidget(QLabel(_("Setting"), self))
+        layout.addWidget(self.section_setting)
+        layout.addWidget(QLabel(_("Lighting"), self))
+        layout.addWidget(self.section_lighting)
+        layout.addWidget(QLabel(_("Style"), self))
+        layout.addWidget(self.section_style)
+        layout.addWidget(QLabel(_("Tags"), self))
+        layout.addWidget(self.section_tags)
+
+        section_actions = QHBoxLayout()
+        self.assemble_button = QPushButton(_("Assemble prompt"), self)
+        self.assemble_button.setToolTip(_("Join section fields into the Result box."))
+        self.assemble_button.clicked.connect(self._assemble_sections)
+        self.split_button = QPushButton(_("Split from result"), self)
+        self.split_button.setToolTip(_("Parse Subject/Setting/Lighting/Style/Tags labels from Result."))
+        self.split_button.clicked.connect(self._split_from_result)
+        section_actions.addWidget(self.assemble_button, 1)
+        section_actions.addWidget(self.split_button, 1)
+        layout.addLayout(section_actions)
 
         self.copy_prompt_button = QPushButton(theme.icon("copy-image"), _("Use as Prompt"), self)
         self.copy_prompt_button.setToolTip(
@@ -263,6 +405,7 @@ class DescribeWidget(QWidget):
         buttons_layout.addWidget(self.copy_prompt_button, 1)
         buttons_layout.addWidget(self.copy_clipboard_button)
         layout.addLayout(buttons_layout)
+        layout.addStretch(1)
 
     @property
     def model(self):
@@ -278,7 +421,10 @@ class DescribeWidget(QWidget):
                 bind_combo(model.describe, "level", self.level_select),
                 bind_combo(model.describe, "provider", self.provider_select),
                 bind_toggle(model.describe, "gguf_use_cuda", self.gguf_cuda_check),
+                bind_combo(model.describe, "shot_scale", self.shot_select),
+                bind_combo(model.describe, "prompt_length", self.length_select),
                 bind_combo(model.describe, "perspective", self.perspective_select),
+                bind_combo(model.describe, "style_lock", self.style_lock_select),
                 bind(model.describe, "custom_perspective", self.custom_perspective_edit, "text"),
                 bind(
                     model.describe, "can_generate", self.describe_button, "enabled", Bind.one_way
@@ -291,6 +437,11 @@ class DescribeWidget(QWidget):
                 model.describe.clio_style_changed.connect(self._sync_style_combo),
                 model.describe.draft_text_changed.connect(self._update_draft),
                 model.describe.result_text_changed.connect(self._update_text),
+                model.describe.section_subject_changed.connect(self._update_sections),
+                model.describe.section_setting_changed.connect(self._update_sections),
+                model.describe.section_lighting_changed.connect(self._update_sections),
+                model.describe.section_style_changed.connect(self._update_sections),
+                model.describe.section_tags_changed.connect(self._update_sections),
                 model.progress_changed.connect(self.update_progress),
             ]
             self.describe_button.model = model
@@ -298,6 +449,7 @@ class DescribeWidget(QWidget):
             self._sync_style_combo()
             self._update_draft()
             self._update_text()
+            self._update_sections()
             self.update_progress()
 
     def update_progress(self):
@@ -329,7 +481,6 @@ class DescribeWidget(QWidget):
         names = clio_style_names()
         if text in names:
             return text
-        # Case-insensitive exact match from typed search
         lower = text.lower()
         for name in names:
             if name.lower() == lower:
@@ -386,3 +537,81 @@ class DescribeWidget(QWidget):
 
     def _text_edited(self):
         self.model.describe.result_text = self.result_edit.toPlainText()
+
+    def _update_sections(self, *_args):
+        d = self.model.describe
+        mapping = (
+            (self.section_subject, d.section_subject),
+            (self.section_setting, d.section_setting),
+            (self.section_lighting, d.section_lighting),
+            (self.section_style, d.section_style),
+        )
+        self._section_syncing = True
+        try:
+            for widget, value in mapping:
+                if value != widget.toPlainText():
+                    widget.setPlainText(value)
+            if d.section_tags != self.section_tags.text():
+                self.section_tags.setText(d.section_tags)
+        finally:
+            self._section_syncing = False
+
+    def _sections_edited(self, *_args):
+        if self._section_syncing:
+            return
+        d = self.model.describe
+        d.section_subject = self.section_subject.toPlainText()
+        d.section_setting = self.section_setting.toPlainText()
+        d.section_lighting = self.section_lighting.toPlainText()
+        d.section_style = self.section_style.toPlainText()
+        d.section_tags = self.section_tags.text()
+
+    def _assemble_sections(self):
+        self._sections_edited()
+        self.model.describe.assemble_sections_to_result()
+
+    def _split_from_result(self):
+        self.model.describe.apply_sections_from_text(self.model.describe.result_text)
+
+    def _reload_library(self):
+        entries = load_library()
+        names = [e["name"] for e in entries]
+        self.library_select.blockSignals(True)
+        self.library_select.clear()
+        self.library_select.addItems(names)
+        self.library_select.blockSignals(False)
+        self._library_completer.setModel(self.library_select.model())
+
+    def _library_insert(self):
+        name = self.library_select.currentText().strip()
+        text = find_library_text(name)
+        if not text:
+            # Try exact combo data / partial match
+            for entry in load_library():
+                if entry["name"].lower() == name.lower() or name.lower() in entry["name"].lower():
+                    text = entry["text"]
+                    break
+        if not text:
+            return
+        current = self.draft_edit.toPlainText().strip()
+        self.model.describe.draft_text = f"{current}\n{text}".strip() if current else text
+
+    def _library_save(self):
+        text = self.model.describe.draft_text.strip() or self.model.describe.result_text.strip()
+        if not text:
+            return
+        name, ok = QInputDialog.getText(
+            self,
+            _("Save to prompt library"),
+            _("Name for this snippet:"),
+        )
+        if not ok or not name.strip():
+            return
+        try:
+            add_library_entry(name.strip(), text)
+            self._reload_library()
+            idx = self.library_select.findText(name.strip())
+            if idx >= 0:
+                self.library_select.setCurrentIndex(idx)
+        except ValueError:
+            pass

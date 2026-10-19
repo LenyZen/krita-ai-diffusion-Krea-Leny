@@ -24,6 +24,18 @@ class WorkflowKind(Enum):
     augment = 9
     wan_video = 10
     seedvr = 11
+    krea_edit = 12
+    minimax_h3 = 13
+    qwen_ultra = 14
+
+
+class QwenUltraMode(Enum):
+    """Modes from QWEN-IMAGE-EDIT-21_ULTRA_WORKFLOW."""
+
+    multi_edit = 0  # instruction edit with 1–N refs (TextEncodeQwenImage21)
+    t2i = 1  # text-to-image
+    inpaint = 2  # selection / mask edit
+    outpaint = 3  # pad + continue scene
 
 
 class WanVideoMode(Enum):
@@ -38,6 +50,43 @@ class WanArch(Enum):
     moe14b = 0  # dual high/low noise experts (I2V or T2V 14B)
     ti2v5b = 1  # single TI2V-5B model + wan2.2_vae + Wan22ImageToVideoLatent
 
+
+@dataclass
+class KreaEditInput:
+    """Instruction-based identity-preserving edit via comfyui-krea2edit."""
+
+    prompt: str = ""
+    negative: str = ""
+    identity_lora: str = "Krea2/krea2_identity_edit_v1_2.safetensors"
+    lora_strength: float = 1.0
+    # Role-scoped LoRAs (applied with prompt guidance that confines their effect)
+    face_lora: str = ""
+    face_lora_strength: float = 1.0
+    body_lora: str = ""
+    body_lora_strength: float = 1.0
+    style_lora: str = ""
+    style_lora_strength: float = 1.0
+    # Extra style/character LoRAs stacked after the Identity Edit adapter
+    extra_loras: list["LoraInput"] = field(default_factory=list)
+    ref_boost: float = 4.0
+    ref_boost_a: float = 1.0
+    grounding_px: int = 768
+    fit_mode: str = "fit"  # "fit" | "crop (legacy)"
+    # Sampling — Turbo matches the official identity-edit graph; Raw is higher quality.
+    sampler: str = "euler"
+    scheduler: str = "simple"
+    steps: int = 10
+    cfg_scale: float = 1.0
+    seed: int = 0
+    # Optional 2nd reference (subject) for multi-ref LoRAs; pixels live on WorkflowInput.images
+    has_ref_b: bool = False
+    # Selection inpaint path (InpaintCropImproved → edit → InpaintStitchImproved)
+    use_inpaint: bool = False
+    mask_expand_pixels: int = 8
+    mask_blend_pixels: int = 32
+    context_factor: float = 1.5
+    inpaint_target_size: int = 1024
+    inpaint_device_mode: str = "gpu (much faster)"
 
 @dataclass
 class SeedVRInput:
@@ -101,6 +150,66 @@ class WanVideoInput:
     loras_high: list["LoraInput"] = field(default_factory=list)
     loras_low: list["LoraInput"] = field(default_factory=list)
     # T2V: no start image; I2V/FLF2V require images.initial_image
+
+
+@dataclass
+class MiniMaxH3Input:
+    """MiniMax H3 Reference→Video (R2V) — native Comfy ≥0.30 nodes + optional turbo LoRAs."""
+
+    prompt: str = ""
+    width: int = 864
+    height: int = 480
+    length: int = 124  # frames @ ~24fps (~5s)
+    fps: int = 24
+    unet: str = ""
+    text_encoder: str = ""
+    video_vae: str = ""
+    audio_vae: str = ""
+    steps: int = 5
+    cfg: float = 1.0
+    sampler: str = "res_multistep"
+    scheduler: str = "simple"
+    shift_video: float = 12.0
+    shift_audio: float = 3.0
+    ref_image_size: str = "match"  # MiniMaxH3ReferenceToVideo: match | max
+    # Up to 6 reference stills (serialized into image_data)
+    ref_images: list[Image] = field(default_factory=list)
+    # Optional absolute path to a local audio file (uploaded into ComfyUI/input on generate)
+    audio_filename: str = ""
+    # Turbo / style LoRAs applied to the UNET (standard LoraLoaderModelOnly)
+    loras: list["LoraInput"] = field(default_factory=list)
+
+
+@dataclass
+class QwenUltraInput:
+    """Qwen Image Edit 2.1 Ultra — multi-edit / t2i / inpaint / outpaint."""
+
+    mode: QwenUltraMode = QwenUltraMode.multi_edit
+    prompt: str = ""
+    negative: str = ""
+    width: int = 1024
+    height: int = 1024
+    megapixels: float = 1.0  # ImageScaleToTotalPixels for edit base
+    resolution: int = 1024  # TextEncodeQwenImage21 resolution widget (t2i)
+    unet: str = ""
+    text_encoder: str = ""
+    vae: str = ""
+    steps: int = 25
+    cfg: float = 1.0
+    sampler: str = "euler"
+    scheduler: str = "simple"
+    denoise: float = 1.0
+    seed: int = 0
+    # Base / refs (image_1 = first; refs after)
+    images: list[Image] = field(default_factory=list)
+    # Optional selection mask for inpaint (same size as images[0])
+    mask: Image | None = None
+    # Outpaint pad pixels (left, top, right, bottom)
+    pad_left: int = 0
+    pad_top: int = 0
+    pad_right: int = 0
+    pad_bottom: int = 0
+    loras: list["LoraInput"] = field(default_factory=list)
 
 
 @dataclass
@@ -295,6 +404,9 @@ class WorkflowInput:
     describe: DescribeInput | None = None
     wan_video: WanVideoInput | None = None
     seedvr: SeedVRInput | None = None
+    krea_edit: KreaEditInput | None = None
+    minimax_h3: MiniMaxH3Input | None = None
+    qwen_ultra: QwenUltraInput | None = None
     krea2_augment_encode: bool = False
 
     @property

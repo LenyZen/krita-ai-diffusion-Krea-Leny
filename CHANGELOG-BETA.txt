@@ -1,10 +1,38 @@
 ComfyforKrita / Krita AI Diffusion — Beta Changelog
 ====================================================
 
-1.52.1-beta.3  (2026-07-25)
+1.52.1-beta.3  (2026-10-19)
 ---------------------------
+Randomizer
+  * Chooser lists, populate defaults, named prompt sets
+  * LoRA stack up to 25, one picked per Generate, named LoRA sets
+  * Always-on LoRAs, up to 8, applied with the random pick
+  * Resizable last-roll box with scrollbar and copy
+  * History Show source (Always and Random LoRA lines)
+  * Ollama Write prompt, free idea, include-dropdowns switch
+  * Docs: workflows/README_RANDOMIZER.md and docs/src/content/docs/randomizer.mdx
+
+Docs
+  * Removed INSTALL-KREA2-DESCRIBE.txt. That file only pointed at an older
+    "Krea 2 + Describe Edition" zip. Describe is part of this beta guide.
+  * README install steps point at this fork, not the upstream release zip.
+  * Docs home link /model-databases now points at /models.
+  * Qwen · Ultra and MiniMax H3 are documented with their ComfyUI version needs.
+
+1.52.1-beta.3  (2026-07-25+)
+---------------------------
+Krea Edit
+  * Refs: Face / Hair / Clothing / Pose role sheets auto-collaged into one
+    secondary identity ref (Identity Edit still max 2 images)
+  * Selection Inpaint via ComfyUI-Inpaint-CropAndStitch (crop 1024 → stitch)
+  * Advanced → Sliders: dedicated picker for LoRAs under loras/krea/sliders/
+  * Sliders are full-canvas oriented; with selection + active sliders the
+    plugin forces full-canvas Edit and warns in the status line
+  * Edit-field starter presets (~10 each for Character / Scene / Lighting / Other)
+  * Docs: workflows/README_KREA_EDIT.md with node + model download links
+
 Docs / packaging
-  * INSTALL-BETA: date bump; Animate quick-start calls out Video Settings… pop-out
+  * INSTALL-BETA: Krea Edit node/LoRA/HF/CivitAI links; date bump for Animate pop-out
   * Dist zip rebuilt from current worktree (includes Wan pop-out + UTF-8 managed-server env)
   * INSTALL-BETA + README: Comic, SVG/CNC/Laser, and CRITICAL tooling-nodes
     load fix called out first (freeze/hang on model scan without the patch)

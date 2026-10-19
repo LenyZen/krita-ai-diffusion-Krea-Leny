@@ -251,6 +251,7 @@ class FileFilter(QSortFilterProxyModel):
         super().__init__(parent)
         self._available_only = False
         self._name_prefix = ""
+        self._path_contains = ""
         self.setSourceModel(source)
         self.setSortCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.sort(0)
@@ -273,6 +274,16 @@ class FileFilter(QSortFilterProxyModel):
         self._name_prefix = value
         self.invalidateFilter()
 
+    @property
+    def path_contains(self):
+        return self._path_contains
+
+    @path_contains.setter
+    def path_contains(self, value: str):
+        # Match nested folder ids like "Krea/sliders/foo.safetensors"
+        self._path_contains = (value or "").replace("\\", "/").lower()
+        self.invalidateFilter()
+
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex):
         if src := self.sourceModel():
             index = src.index(source_row, 0, source_parent)
@@ -283,6 +294,10 @@ class FileFilter(QSortFilterProxyModel):
             if self._name_prefix:
                 name = src.data(index)
                 if not name.startswith(self._name_prefix):
+                    return False
+            if self._path_contains:
+                file_id = str(src.data(index, Qt.ItemDataRole.UserRole) or "")
+                if self._path_contains not in file_id.replace("\\", "/").lower():
                     return False
         return True
 

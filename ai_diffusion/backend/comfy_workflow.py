@@ -275,6 +275,13 @@ class ComfyWorkflow:
         self.image_data[id] = data
         return id
 
+    def _add_image_unique(self, image: Image):
+        """Always-unique cache id — forces ComfyUI to re-load (no execution-cache reuse)."""
+        data = image.to_bytes()
+        id = uuid4().hex
+        self.image_data[id] = data
+        return id
+
     # Nodes
 
     def ksampler(
@@ -614,7 +621,12 @@ class ComfyWorkflow:
 
     def empty_latent_image(self, extent: Extent, arch: Arch, batch_size=1):
         w, h = extent.width, extent.height
-        if arch.is_flux_like or arch.is_qwen_like or arch in (Arch.sd3, Arch.chroma, Arch.zimage):
+        if arch.is_flux_like or arch.is_qwen_like or arch in (
+            Arch.sd3,
+            Arch.chroma,
+            Arch.zimage,
+            Arch.krea2,
+        ):
             return self.add("EmptySD3LatentImage", 1, width=w, height=h, batch_size=batch_size)
         if arch.is_flux2 or arch is Arch.ernie:
             return self.add("EmptyFlux2LatentImage", 1, width=w, height=h, batch_size=batch_size)
@@ -722,6 +734,40 @@ class ComfyWorkflow:
             image2=image2,
             image3=image3,
             prompt=prompt,
+        )
+
+    def text_encode_qwen_image_21(
+        self,
+        clip: Output,
+        prompt: str | Output,
+        negative_prompt: str = "",
+        resolution: int = 0,
+        vae: Output | None = None,
+        images: list[Output] | None = None,
+    ):
+        """Comfy ≥0.38 TextEncodeQwenImage21 → positive, negative, latent."""
+        inputs: dict[str, Any] = {
+            "clip": clip,
+            "prompt": prompt,
+            "negative_prompt": negative_prompt or "",
+            "resolution": int(resolution or 0),
+        }
+        if vae is not None:
+            inputs["vae"] = vae
+        for i, image in enumerate((images or [])[:11]):
+            inputs[f"images.image_{i + 1}"] = image
+        return self.add("TextEncodeQwenImage21", 3, **inputs)
+
+    def image_scale_to_total_pixels(
+        self, image: Output, megapixels: float = 1.0, upscale_method: str = "lanczos", multiple_of: int = 32
+    ):
+        return self.add(
+            "ImageScaleToTotalPixels",
+            1,
+            image=image,
+            upscale_method=upscale_method,
+            megapixels=float(megapixels),
+            multiple_of=int(multiple_of),
         )
 
     def text_encode_krea2(
@@ -1284,6 +1330,16 @@ class ComfyWorkflow:
 
     def _load_image_cache(self, image: Image):
         return self.add("ETN_LoadImageCache", 2, id=self._add_image_hashed(image))[0]
+
+    def load_image_unique(self, image: Image | ImageCollection):
+        """Like load_image, but never reuses a previous ComfyUI LoadImageCache id."""
+        if self._run_mode is ComfyRunMode.runtime:
+            return self._load_image_batch(image, self._load_image_runtime, self.batch_image)
+
+        def _unique(img: Image):
+            return self.add("ETN_LoadImageCache", 2, id=self._add_image_unique(img))[0]
+
+        return self._load_image_batch(image, _unique, self.batch_image)
 
     def _load_mask_runtime(self, mask: Image):
         return self.add("ETN_InjectMask", 1, id=self._add_image(mask))

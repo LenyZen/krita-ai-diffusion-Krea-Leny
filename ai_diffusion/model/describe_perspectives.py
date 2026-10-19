@@ -1200,6 +1200,214 @@ _LENGTH_GUIDANCE = {
 _DEFAULT_LENGTH_GUIDANCE = _LENGTH_GUIDANCE["more_detailed_caption"]
 
 
+class ShotScale(Enum):
+    """Framing distance for VLM caption instructions (NO8D-inspired)."""
+
+    auto = "auto"
+    extreme_closeup = "extreme_closeup"
+    closeup = "closeup"
+    medium_closeup = "medium_closeup"
+    medium = "medium"
+    full = "full"
+    extreme_wide = "extreme_wide"
+
+
+class PromptLength(Enum):
+    """Explicit output length budget for instruction VLMs."""
+
+    short = "short"
+    standard = "standard"
+    detailed = "detailed"
+    extensive = "extensive"
+
+
+class StyleLock(Enum):
+    """How Clio / perspective interact with the image's native medium."""
+
+    blend = "blend"  # current behavior
+    keep_medium = "keep_medium"  # preserve photographic/painted medium cues
+    force_style = "force_style"  # lock Clio/perspective as target look
+
+
+_SHOT_SCALE_GUIDANCE: dict[ShotScale, str] = {
+    ShotScale.auto: (
+        "Match the shot scale already present in the image — do not invent a"
+        " different framing distance."
+    ),
+    ShotScale.extreme_closeup: (
+        "Use an extreme close-up shot scale. Show only a small important part of"
+        " the main subject (eyes, fabric texture, product material, ornament)."
+        " Subject detail should dominate; background reads as blur, color, or light."
+        " Do not describe the whole figure, full pose, or broad environment."
+    ),
+    ShotScale.closeup: (
+        "Use a close-up shot scale. The subject fills most of the frame"
+        " (face / head-and-shoulders, product front, facade section). Prioritize"
+        " features, expression or form, surface finish, and nearby light. Include"
+        " only a little environment — not full-body or scenic context."
+    ),
+    ShotScale.medium_closeup: (
+        "Use a near / medium close-up shot scale. Keep the subject dominant but not"
+        " face-only (roughly chest-up for a person; most of a product with close"
+        " surface detail). Limited nearby setting; avoid feet and broad scenery."
+    ),
+    ShotScale.medium: (
+        "Use a medium shot scale. Show enough of the subject to read pose, action,"
+        " or structure (waist-to-knee for a person; product with immediate context)."
+        " Balance subject, nearby environment, and light — avoid microdetail-only"
+        " and avoid turning it into a full environmental wide."
+    ),
+    ShotScale.full: (
+        "Use a full shot scale. Show the complete main subject (head to feet for a"
+        " person; whole product or building when that is the subject) with clear"
+        " surrounding environment, ground contact, and scale. Avoid close-up-only"
+        " microdetails that would not be prominent at this distance."
+    ),
+    ShotScale.extreme_wide: (
+        "Use an extreme wide shot scale. Environment and scene geography dominate;"
+        " the subject is small or used as a scale marker. Focus on location, weather,"
+        " distance, mood, and light. Keep the subject brief — no face or fabric microdetail."
+    ),
+}
+
+_PROMPT_LENGTH_GUIDANCE: dict[PromptLength, str] = {
+    PromptLength.short: (
+        "Target length: about 80–120 words (roughly 128 tokens). One tight paragraph."
+        " Put subject, action, and framing first; then only essential setting and light."
+        " No padding or repetition."
+    ),
+    PromptLength.standard: (
+        "Target length: about 180–256 words (roughly 256 tokens). One cohesive paragraph."
+        " Put subject, action, camera-to-subject relationship, and composition first,"
+        " then setting, lighting, medium, and mood."
+    ),
+    PromptLength.detailed: (
+        "Target length: about 350–450 words (roughly 512 tokens). One richly developed"
+        " paragraph (or two short ones). After subject and framing, add grounded visual"
+        " evidence: pose, spatial layout, materials, textures, color relationships,"
+        " lighting direction, and atmosphere — without padding."
+    ),
+    PromptLength.extensive: (
+        "Target length: two to three full paragraphs of lavish but coherent prose."
+        " Cover subjects, setting, composition, lighting, materials, and atmosphere"
+        " thoroughly. Still avoid meta commentary and lists."
+    ),
+}
+
+_SECTION_OUTPUT_RULES = (
+    "Format the entire response using exactly these labeled sections in this order"
+    " (each value on the same line or immediately below its label):\n"
+    "Subject: …\n"
+    "Setting: …\n"
+    "Lighting: …\n"
+    "Style: …\n"
+    "Tags: comma-separated keywords only\n"
+    "Do not add any other headings, preamble, or closing remarks."
+)
+
+_SECTION_KEYS = ("subject", "setting", "lighting", "style", "tags")
+_SECTION_LABELS = {
+    "subject": "Subject",
+    "setting": "Setting",
+    "lighting": "Lighting",
+    "style": "Style",
+    "tags": "Tags",
+}
+
+
+def _length_guidance(level_task: str, prompt_length: PromptLength | None = None) -> str:
+    if prompt_length is not None:
+        return _PROMPT_LENGTH_GUIDANCE[prompt_length]
+    return _LENGTH_GUIDANCE.get(level_task, _DEFAULT_LENGTH_GUIDANCE)
+
+
+def _style_lock_guidance(
+    style_lock: StyleLock,
+    style_name: str = "",
+    style_prompt: str = "",
+) -> str:
+    if style_lock is StyleLock.keep_medium:
+        return (
+            "Keep the image's native medium clear (photo, paint, 3D, etc.). Do not"
+            " rename it into a conflicting art style. If a target style lens is also"
+            " provided, treat it as atmosphere and vocabulary only — never replace the"
+            " true medium."
+        )
+    if style_lock is StyleLock.force_style and (style_prompt or style_name):
+        return (
+            f'Lock the target look to "{style_name or "the selected style"}". Treat the'
+            " image's original medium as source evidence only. Rewrite lighting,"
+            " materials, and rendering language to fit the locked style; remove"
+            " conflicting medium words (e.g. do not call a forced oil-paint look a photo)."
+        )
+    return ""
+
+
+def _shot_and_lock_suffix(
+    shot_scale: ShotScale = ShotScale.auto,
+    style_lock: StyleLock = StyleLock.blend,
+    style_name: str = "",
+    style_prompt: str = "",
+) -> str:
+    parts: list[str] = []
+    parts.append(_SHOT_SCALE_GUIDANCE.get(shot_scale, _SHOT_SCALE_GUIDANCE[ShotScale.auto]))
+    lock = _style_lock_guidance(style_lock, style_name, style_prompt)
+    if lock:
+        parts.append(lock)
+    return " ".join(parts)
+
+
+def parse_describe_sections(text: str) -> dict[str, str]:
+    """Parse Subject/Setting/Lighting/Style/Tags blocks from VLM output."""
+    text = (text or "").strip()
+    out = {k: "" for k in _SECTION_KEYS}
+    if not text:
+        return out
+    # Match "Label:" headers case-insensitively; capture until next label or end.
+    pattern = re.compile(
+        r"(?is)^\s*(Subject|Setting|Lighting|Style|Tags)\s*:\s*(.*?)(?=^\s*(?:Subject|Setting|Lighting|Style|Tags)\s*:|\Z)",
+        re.MULTILINE,
+    )
+    matches = list(pattern.finditer(text))
+    if not matches:
+        out["subject"] = text
+        return out
+    key_map = {v.lower(): k for k, v in _SECTION_LABELS.items()}
+    for m in matches:
+        key = key_map.get(m.group(1).lower())
+        if key:
+            out[key] = m.group(2).strip()
+    return out
+
+
+def assemble_describe_sections(
+    subject: str = "",
+    setting: str = "",
+    lighting: str = "",
+    style: str = "",
+    tags: str = "",
+) -> str:
+    """Join section fields into one generation-ready prompt."""
+    parts: list[str] = []
+    for key, value in (
+        ("subject", subject),
+        ("setting", setting),
+        ("lighting", lighting),
+        ("style", style),
+    ):
+        cleaned = (value or "").strip()
+        if cleaned:
+            parts.append(cleaned)
+    tags_clean = (tags or "").strip()
+    if tags_clean:
+        parts.append(tags_clean)
+    return "\n\n".join(parts)
+
+
+def empty_describe_sections() -> dict[str, str]:
+    return {k: "" for k in _SECTION_KEYS}
+
+
 def _genre_lens(perspective: Perspective, custom: str = "") -> str:
     style = _STYLES[perspective]
     custom = custom.strip()
@@ -1246,27 +1454,26 @@ def build_instruction(
     custom: str = "",
     style_name: str = "",
     style_prompt: str = "",
+    shot_scale: ShotScale = ShotScale.auto,
+    prompt_length: PromptLength = PromptLength.detailed,
+    style_lock: StyleLock = StyleLock.blend,
+    sectioned: bool = True,
 ) -> str:
-    """Full instruction for an instruction-following VLM (Qwen-VL).
-
-    `level_task` is the Florence-2 task name from `DescribeLevel`, reused here
-    to scale the requested length of the response. `custom` is free-form user
-    text describing an additional perspective; it takes the leading role and
-    is combined with the dropdown genre when one is selected.
-    Optional `style_name` / `style_prompt` inject a Clio Style Library entry.
-    """
-    length = _LENGTH_GUIDANCE.get(level_task, _DEFAULT_LENGTH_GUIDANCE)
+    """Full instruction for an instruction-following VLM (Qwen-VL / GGUF-VLM)."""
+    length = _length_guidance(level_task, prompt_length)
     lens = _compose_lens(perspective, custom, style_name, style_prompt)
+    framing = _shot_and_lock_suffix(shot_scale, style_lock, style_name, style_prompt)
+    sections = f" {_SECTION_OUTPUT_RULES}" if sectioned else ""
     return (
         "You are writing an evocative image description that will be used as a"
         " prompt for an image generation model, so describe only what should"
         " appear in the picture — no meta commentary, no preamble, no lists of"
-        f" observations. {lens} Describe this image in long, conversational,"
+        f" observations. {lens} {framing} Describe this image in long, conversational,"
         " emotionally evocative prose: name the subjects and their appearance,"
         " the setting and its details, the composition and point of view, the"
         " lighting and color palette, the textures and materials, and above all"
         f" the atmosphere and the feelings the scene evokes. {length}"
-        " Respond with the description text only."
+        f"{sections} Respond with the description text only."
     )
 
 
@@ -1277,24 +1484,31 @@ def build_enhance_instruction(
     custom: str = "",
     style_name: str = "",
     style_prompt: str = "",
+    shot_scale: ShotScale = ShotScale.auto,
+    prompt_length: PromptLength = PromptLength.detailed,
+    style_lock: StyleLock = StyleLock.blend,
+    sectioned: bool = True,
 ) -> str:
     """Instruction for Qwen-VL: expand the user's draft using the attached image."""
     draft = draft.strip()
     lens = _compose_lens(perspective, custom, style_name, style_prompt)
+    framing = _shot_and_lock_suffix(shot_scale, style_lock, style_name, style_prompt)
     if level_task == "prompt_gen_tags":
         length = (
             "Output a single line of comma-separated Danbooru-style tags that"
             " capture the draft intent and what is visible in the image — subjects,"
             " style, lighting, and mood. No sentences, no preamble."
         )
+        sectioned = False
     else:
-        length = _LENGTH_GUIDANCE.get(level_task, _DEFAULT_LENGTH_GUIDANCE)
+        length = _length_guidance(level_task, prompt_length)
+    sections = f"\n- {_SECTION_OUTPUT_RULES}" if sectioned else ""
     return (
         "You are enhancing a user's draft description into a generation-ready"
         " image prompt. Use the attached image as ground truth for what is"
         " actually visible — keep the draft's intent, but correct contradictions,"
         " fill in concrete visual detail, and expand weakly specified parts.\n"
-        f"{lens}\n"
+        f"{lens}\n{framing}\n"
         "Write in long, conversational, emotionally evocative prose suited to"
         " prompt-hungry image models: subjects and appearance, setting, composition,"
         " lighting, color, textures/materials, atmosphere and mood.\n"
@@ -1303,7 +1517,7 @@ def build_enhance_instruction(
         " no 'here is the improved prompt').\n"
         "- Stay faithful to the image; do not invent major subjects that are absent.\n"
         "- Preserve distinctive names, style cues, and creative direction from the draft.\n"
-        f"- {length}\n\n"
+        f"- {length}{sections}\n\n"
         f"User draft to enhance:\n{draft}\n"
     )
 

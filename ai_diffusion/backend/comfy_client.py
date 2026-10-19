@@ -9,8 +9,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from itertools import product
+from pathlib import Path
 from time import time
 from typing import Any
+
+from PyQt5.QtCore import QFile, QIODevice
+from PyQt5.QtNetwork import QHttpMultiPart, QHttpPart, QNetworkRequest
 
 from .. import platform_tools, util
 from ..files import FileFormat
@@ -328,7 +332,18 @@ class ComfyClient(Client):
         # Also free when switching Describe → Generate: llama.cpp VRAM is invisible to
         # torch and can leave the card thrashing until ComfyUI /free runs.
         kind = job.work.kind
-        need_free = kind in (WorkflowKind.describe, WorkflowKind.seedvr)
+        # Free VRAM for heavy one-shot jobs. For Krea Edit, only free when
+        # switching *into* it from something else — unloading between chained
+        # edits can leave ComfyUI's execution cache holding stale model patches
+        # and makes the second pass look like a near-passthrough.
+        need_free = kind in (
+            WorkflowKind.describe,
+            WorkflowKind.seedvr,
+            WorkflowKind.minimax_h3,
+            WorkflowKind.wan_video,
+        )
+        if kind is WorkflowKind.krea_edit and self._last_job_kind is not WorkflowKind.krea_edit:
+            need_free = True
         if self._last_job_kind is WorkflowKind.describe and kind is not WorkflowKind.describe:
             need_free = True
         if need_free:
@@ -605,6 +620,116 @@ class ComfyClient(Client):
             except Exception as e:
                 log.error(f"Error uploading image {id}: {e!s}")
                 raise RuntimeError(f"Error uploading input image to ComfyUI: {e!s}") from e
+
+    async def upload_input_file(self, path: Path, overwrite: bool = True) -> str:
+        """Upload a local file into ComfyUI/input via /upload/image. Returns the server filename."""
+        path = Path(path)
+        if not path.is_file():
+            raise FileNotFoundError(str(path))
+
+        multi = QHttpMultiPart(QHttpMultiPart.ContentType.FormDataType)
+
+        file_part = QHttpPart()
+        file_part.setHeader(
+            QNetworkRequest.KnownHeaders.ContentDispositionHeader,
+            f'form-data; name="image"; filename="{path.name}"',
+        )
+        qfile = QFile(str(path))
+        if not qfile.open(QIODevice.OpenModeFlag.ReadOnly):
+            raise RuntimeError(_("Could not open audio file") + f": {path}")
+        file_part.setBodyDevice(qfile)
+        qfile.setParent(multi)
+        multi.append(file_part)
+
+        for name, value in (
+            ("overwrite", "true" if overwrite else "false"),
+            ("type", "input"),
+        ):
+            part = QHttpPart()
+            part.setHeader(
+                QNetworkRequest.KnownHeaders.ContentDispositionHeader,
+                f'form-data; name="{name}"',
+            )
+            part.setBody(value.encode("utf-8"))
+            multi.append(part)
+
+        url = f"{self.url}/upload/image"
+        log.info("Uploading input file %s → %s", path.name, url)
+        try:
+            result = await self._requests.post_multipart(url, multi)
+        except Exception as e:
+            raise RuntimeError(_("Failed to upload audio to ComfyUI") + f": {e!s}") from e
+
+        if isinstance(result, (bytes, bytearray, memoryview)):
+            try:
+                result = json.loads(bytes(result).decode("utf-8"))
+            except Exception:
+                result = None
+        if isinstance(result, dict) and result.get("name"):
+            sub = (result.get("subfolder") or "").strip().replace("\\", "/")
+            name = result["name"]
+            return f"{sub}/{name}" if sub else name
+        log.warning("Unexpected /upload/image response: %s", result)
+        return path.name
+
+    async def download_history_audio(self, job_id: str, dest_dir: Path) -> Path | None:
+        """Pull the first audio file from a finished prompt's history into dest_dir."""
+        return await self._download_history_media(job_id, dest_dir, keys=("audio",))
+
+    async def download_history_video(self, job_id: str, dest_dir: Path) -> Path | None:
+        """Pull the first muxed video (VHS gifs / videos) from history into dest_dir."""
+        return await self._download_history_media(job_id, dest_dir, keys=("gifs", "videos"))
+
+    async def _download_history_media(
+        self, job_id: str, dest_dir: Path, keys: tuple[str, ...]
+    ) -> Path | None:
+        dest_dir = Path(dest_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            history = await self._get(f"history/{job_id}", timeout=60)
+        except Exception as e:
+            log.warning("download_history_media: history fetch failed: %s", e)
+            return None
+        entry = history.get(job_id) if isinstance(history, dict) else None
+        if not entry:
+            return None
+        outputs = entry.get("outputs") or {}
+        from urllib.parse import urlencode
+
+        for node_output in outputs.values():
+            if not isinstance(node_output, dict):
+                continue
+            for key in keys:
+                for info in node_output.get(key) or []:
+                    if not isinstance(info, dict):
+                        continue
+                    filename = info.get("filename")
+                    if not filename:
+                        continue
+                    # Prefer real video containers over animated webp/gif previews
+                    if key in ("gifs", "videos"):
+                        lower = str(filename).lower()
+                        if not any(lower.endswith(ext) for ext in (".mp4", ".webm", ".mkv", ".mov")):
+                            continue
+                    subfolder = info.get("subfolder") or ""
+                    folder_type = info.get("type") or "output"
+                    query = urlencode(
+                        {"filename": filename, "subfolder": subfolder, "type": folder_type}
+                    )
+                    try:
+                        data = await self._requests.download(
+                            f"{self.url}/view?{query}", timeout=600
+                        )
+                    except Exception as e:
+                        log.warning(
+                            "download_history_media: view failed for %s: %s", filename, e
+                        )
+                        continue
+                    dest = dest_dir / Path(filename).name
+                    dest.write_bytes(data)
+                    log.info("Downloaded H3 media → %s (%d bytes)", dest, len(data))
+                    return dest
+        return None
 
     async def _transfer_result_images(self, msg: dict) -> list[Image]:
         output = msg["data"]["output"]

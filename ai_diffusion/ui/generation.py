@@ -28,12 +28,15 @@ from PyQt5.QtWidgets import (
     QAction,
     QCheckBox,
     QComboBox,
+    QDialog,
     QHBoxLayout,
+    QLabel,
     QListView,
     QListWidget,
     QListWidgetItem,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QSizePolicy,
@@ -67,6 +70,93 @@ from .widget import (
     WorkspaceSelectWidget,
     create_wide_tool_button,
 )
+
+
+def _copy_text(text: str):
+    if clipboard := QGuiApplication.clipboard():
+        clipboard.setText(text)
+
+
+def _format_lora_line(name: str, weight) -> str:
+    if isinstance(weight, (int, float)):
+        return f"{name} @ {weight:g}"
+    return f"{name} @ {weight}"
+
+
+class ShowSourceDialog(QDialog):
+    """Prompt and LoRA that produced one history image."""
+
+    def __init__(self, job: Job, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(_("Show source"))
+        self.resize(480, 380)
+        meta = job.params.metadata
+        prompt = (
+            meta.get("source_prompt")
+            or meta.get("prompt_eval")
+            or meta.get("prompt")
+            or job.params.prompt
+        )
+        final = str(meta.get("prompt_final") or "")
+        lora_text = _source_lora_text(meta)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(_("Prompt"), self))
+        self._prompt = QPlainTextEdit(prompt, self)
+        self._prompt.setReadOnly(True)
+        layout.addWidget(self._prompt, 1)
+
+        if final.strip() and final.strip() != str(prompt).strip():
+            layout.addWidget(QLabel(_("Sent to the model"), self))
+            sent = QPlainTextEdit(final, self)
+            sent.setReadOnly(True)
+            sent.setFixedHeight(72)
+            layout.addWidget(sent)
+
+        layout.addWidget(QLabel(_("LoRA"), self))
+        self._lora = QPlainTextEdit(lora_text, self)
+        self._lora.setReadOnly(True)
+        self._lora.setFixedHeight(96)
+        layout.addWidget(self._lora)
+
+        row = QHBoxLayout()
+        copy_prompt = QPushButton(_("Copy prompt"), self)
+        copy_prompt.clicked.connect(lambda: _copy_text(self._prompt.toPlainText()))
+        copy_lora = QPushButton(_("Copy LoRA"), self)
+        copy_lora.clicked.connect(lambda: _copy_text(self._lora.toPlainText()))
+        close = QPushButton(_("Close"), self)
+        close.clicked.connect(self.accept)
+        row.addWidget(copy_prompt)
+        row.addWidget(copy_lora)
+        row.addStretch(1)
+        row.addWidget(close)
+        layout.addLayout(row)
+
+
+def _source_lora_text(meta: dict) -> str:
+    lines: list[str] = []
+    fixed = meta.get("source_fixed_loras") or []
+    if isinstance(fixed, list):
+        for entry in fixed:
+            if isinstance(entry, dict) and str(entry.get("name") or "").strip():
+                lines.append(
+                    "Always  "
+                    + _format_lora_line(
+                        str(entry["name"]), entry.get("strength", entry.get("weight", 1))
+                    )
+                )
+    name = str(meta.get("source_lora") or "").strip()
+    if name:
+        prefix = "Random  " if lines else ""
+        lines.append(prefix + _format_lora_line(name, meta.get("source_lora_strength", 1.0)))
+    if lines:
+        return "\n".join(lines)
+    for entry in meta.get("loras") or []:
+        if isinstance(entry, dict) and entry.get("name") and entry.get("enabled", True):
+            lines.append(
+                _format_lora_line(str(entry["name"]), entry.get("weight", entry.get("strength", 1)))
+            )
+    return "\n".join(lines) if lines else _("No extra LoRA")
 
 
 class HistoryWidget(QListWidget):
@@ -431,6 +521,9 @@ class HistoryWidget(QListWidget):
         if item is not None:
             job = self._model.jobs.find(self._item_data(item).job)
             menu = QMenu(self)
+            self._menu_job = job
+            menu.addAction(_("Show Source"), self._show_source)
+            menu.addSeparator()
             menu.addAction(_("Copy Prompt"), self._copy_prompt)
             menu.addAction(_("Copy Prompt (Evaluated)"), self._copy_prompt_evaluated)
             menu.addAction(_("Copy Strength"), self._copy_strength)
@@ -457,6 +550,11 @@ class HistoryWidget(QListWidget):
         pos = self._context_button.pos()
         pos.setY(pos.y() + self._context_button.height())
         self._show_context_menu(pos)
+
+    def _show_source(self):
+        job = getattr(self, "_menu_job", None) or self.selected_job
+        if job is not None:
+            ShowSourceDialog(job, self).exec_()
 
     def _copy_prompt(self, evaluated=False):
         if job := self.selected_job:

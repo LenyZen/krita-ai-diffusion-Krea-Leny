@@ -31,6 +31,7 @@ from within Krita. Visit
 <li><strong>History</strong>: Preview results and browse previous generations and prompts at any time.</li>
 <li><strong>Strong Defaults</strong>: Versatile default style presets allow for a streamlined UI.</li>
 <li><strong>Customization</strong>: Create your own presets - custom checkpoints, LoRA, samplers and more.</li>
+<li><strong>Randomizer</strong>: Roll one prompt from your lists and one LoRA from a stack. Keep other LoRAs on every image. An optional local Ollama writer can turn a short idea into a full prompt. See <code>workflows/README_RANDOMIZER.md</code>.</li>
 </ul>
 <h2><a name="installation"></a> Getting Started</h2>
 <p>See the <a href="https://docs.interstice.cloud/installation">Plugin Installation Guide</a> for instructions.</p>
@@ -79,6 +80,8 @@ server is also possible this way.</p>
 <p>If you're looking for a way to easily select objects or remove background in the
 image, there is a <a href="https://github.com/Acly/krita-ai-tools">separate plugin</a>
 which adds AI segmentation tools.</p>
+<h2>Randomizer</h2>
+<p>Open the AI docker and choose <strong>Randomizer</strong> under Generate. Each Generate takes one entry from every Chooser list that has text, one LoRA from the stack, and every LoRA in <strong>Always apply these LoRAs</strong>. The style’s checkpoint, sampler, and strength still apply. Full steps, save/load, and the Ollama writer are in <code>workflows/README_RANDOMIZER.md</code>. Install notes are in <code>INSTALL.txt</code> next to this file.</p>
 <h2>Contributing</h2>
 <p>Contributions are very welcome! Check the <a href="CONTRIBUTING.md">contributing guide</a> to get started.</p>
 <h2><a name="gallery"></a> Gallery</h2>

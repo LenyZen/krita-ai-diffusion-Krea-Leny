@@ -1,0 +1,112 @@
+AI Image Diffusion for Krita
+Plugin build: 1.52.1-beta.3 with Randomizer
+Date: 2026-10-19
+
+This zip is the Krita plugin. It does not include ComfyUI, model files, or your saved styles. Those stay where they already are.
+
+Plugin folder (this zip replaces it):
+  %APPDATA%\krita\pykrita\ai_diffusion
+  %APPDATA%\krita\pykrita\ai_diffusion.desktop
+
+Your settings, styles, logs, and Randomizer sets (leave these alone):
+  %APPDATA%\krita\ai_diffusion\
+
+On a typical Windows account that is:
+  C:\Users\<you>\AppData\Roaming\krita\pykrita\
+  C:\Users\<you>\AppData\Roaming\krita\ai_diffusion\
+
+
+REQUIREMENTS
+------------
+
+- Krita 5.2 or newer
+- A ComfyUI server the plugin can reach (the one this plugin already manages, or your own)
+- NVIDIA GPU, 12 GB VRAM recommended for Krea 2
+- Ollama, only if you use Randomizer → Write prompt
+  http://127.0.0.1:11434
+
+
+INSTALL
+-------
+
+1. Quit Krita.
+
+2. Back up the current plugin if you already have one. Rename the folder:
+
+     %APPDATA%\krita\pykrita\ai_diffusion
+     to
+     %APPDATA%\krita\pykrita\ai_diffusion.bak
+
+   Leave %APPDATA%\krita\ai_diffusion\ as it is. That folder is your data.
+
+3. Install the zip, either way:
+
+   Import
+     Tools → Scripts → Import Python Plugin from File…
+     Choose this zip.
+     Restart Krita when it asks.
+
+   Or copy by hand into %APPDATA%\krita\pykrita\ :
+
+     ai_diffusion\            →  pykrita\ai_diffusion\
+     ai_diffusion.desktop     →  pykrita\ai_diffusion.desktop
+
+4. Settings → Configure Krita → Python Plugin Manager.
+   Enable "AI Image Diffusion" if it is off.
+
+5. Restart Krita.
+
+6. Settings → Dockers → AI Image Diffusion.
+   Connect to the ComfyUI you already use. If the server is already running
+   on 127.0.0.1:8188, the docker can attach to it.
+
+Do not click Upgrade on the server if that ComfyUI already has your models
+and custom nodes. An upgrade can move that whole ComfyUI folder aside and
+install a stock one.
+
+
+WHAT YOU GET
+------------
+
+This build is the 1.52.1-beta.3 plugin plus the Randomizer workspace:
+
+- Chooser lists, with named prompt sets
+- A LoRA stack of up to 25, one chosen at random, with named LoRA sets
+- Up to 8 LoRAs that apply on every image
+- A last-roll box you can resize, scroll, and copy
+- Show source on a history image
+- Write prompt through Ollama, including a free-idea box
+
+How to use Randomizer:
+  ai_diffusion\workflows\README_RANDOMIZER.md
+
+The other beta workspaces (Describe, Augment, Comic, SVG / CNC, Animate,
+SeedVR Enhance, Krea Edit) are still in this plugin. Their notes are in
+ai_diffusion\workflows\.
+
+
+SERVER NOTES
+------------
+
+If the server sits on "loading" for a long time the first time it scans
+models, replace this file after comfyui-tooling-nodes exists:
+
+  tooling-nodes-api.py
+    →  <ComfyUI>\custom_nodes\comfyui-tooling-nodes\api.py
+
+Restart the AI server from the docker after that copy. Do not kill the
+ComfyUI process from outside the docker.
+
+Write prompt needs Ollama running before you click Ask Ollama. The model
+menu is the same idea as Describe. This build looks for
+jimscard/new-adult-writer:latest first.
+
+
+IF THE PLUGIN DOES NOT APPEAR
+-----------------------------
+
+- The folder must be named ai_diffusion
+- ai_diffusion.desktop must sit next to that folder, not inside it
+- Enable it in Python Plugin Manager, then restart Krita
+- "Could not find websockets" means the plugin folder was copied without
+  the websockets folder that is inside this zip. Install from the zip.

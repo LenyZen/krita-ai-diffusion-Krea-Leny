@@ -19,7 +19,7 @@ from ..settings import PerformanceSettings
 from ..style import Style
 from ..util import PluginError, ensure
 from ..util import client_logger as log
-from .api import WorkflowInput
+from .api import LoraInput, WorkflowInput
 from .comfy_workflow import ComfyObjectInfo
 from .resources import Arch, ControlMode, CustomNode, ResourceId, ResourceKind, UpscalerName
 
@@ -510,6 +510,17 @@ def loras_to_upload(workflow: WorkflowInput, client_models: ClientModels):
     if wan := workflow.wan_video:
         workflow_loras.extend(wan.loras_high)
         workflow_loras.extend(wan.loras_low)
+    if h3 := workflow.minimax_h3:
+        workflow_loras.extend(h3.loras)
+    if edit := workflow.krea_edit:
+        workflow_loras.extend(edit.extra_loras)
+        for name, strength in (
+            (edit.face_lora, edit.face_lora_strength),
+            (edit.body_lora, edit.body_lora_strength),
+            (edit.style_lora, edit.style_lora_strength),
+        ):
+            if name:
+                workflow_loras.append(LoraInput(name, strength))
 
     for lora in workflow_loras:
         if lora.name in client_models.loras:

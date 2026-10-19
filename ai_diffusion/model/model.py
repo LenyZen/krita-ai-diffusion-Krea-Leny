@@ -76,13 +76,22 @@ from .region import Region, RegionLink, RootRegion, get_region_inpaint_mask, pro
 from .augment import AugmentWorkspace
 from .animate import AnimateWorkspace
 from .seedvr import SeedVRWorkspace
+from .krea_edit import KreaEditWorkspace
+from .minimax_h3 import MiniMaxH3Workspace
+from .qwen_ultra import QwenUltraWorkspace
+from .randomizer import RandomizerWorkspace
 from .comic import ComicWorkspace
 from .clio_styles import CLIO_STYLE_NONE, clio_style_prompt
 from .describe_perspectives import (
     Perspective,
+    PromptLength,
+    ShotScale,
+    StyleLock,
+    assemble_describe_sections,
     build_enhance_instruction,
     build_instruction,
     enrich_caption,
+    parse_describe_sections,
 )
 from .vector_cnc import VectorCncWorkspace
 
@@ -105,6 +114,10 @@ class Workspace(Enum):
     comic = 8
     animate = 9
     seedvr = 10
+    krea_edit = 11
+    minimax_h3 = 12
+    qwen_ultra = 13
+    randomizer = 14
 
 
 class ProgressKind(Enum):
@@ -202,6 +215,10 @@ class DocumentModel(QObject, ObservableProperties):
         self.comic = ComicWorkspace(self)
         self.animate = AnimateWorkspace(self)
         self.seedvr = SeedVRWorkspace(self)
+        self.krea_edit = KreaEditWorkspace(self)
+        self.minimax_h3 = MiniMaxH3Workspace(self)
+        self.qwen_ultra = QwenUltraWorkspace(self)
+        self.randomizer = RandomizerWorkspace()
         self._style_connection: QMetaObject.Connection | None = None
 
         self.jobs.selection_changed.connect(self.update_preview)
@@ -298,10 +315,26 @@ class DocumentModel(QObject, ObservableProperties):
         if not dryrun:
             conditioning, ref_layers = self._add_reference_layers(conditioning)
 
+        replace_loras = None
+        trigger_loras = None
+        if self.workspace is Workspace.randomizer and not dryrun:
+            prompt, rolled = self.randomizer.roll()
+            conditioning = copy(conditioning)
+            conditioning.positive = prompt
+            conditioning.regions = []
+            replace_loras = self.randomizer.loras_for_job(rolled)
+            trigger_loras = replace_loras
+
         original_conditioning = conditioning
         inpaint_instruction = inpaint_mode if strength == 1.0 else None
         conditioning, loras, prompt_meta = workflow.prepare_prompts(
-            conditioning, self.style, seed, arch, inpaint_instruction, ref_layers
+            conditioning,
+            self.style,
+            seed,
+            arch,
+            inpaint_instruction,
+            ref_layers,
+            trigger_loras=trigger_loras,
         )
 
         if mask is not None or workflow_kind is WorkflowKind.refine:
@@ -338,6 +371,7 @@ class DocumentModel(QObject, ObservableProperties):
             loras=loras,
             inpaint=inpaint,
             layer_count=self.layer_count,
+            replace_loras=replace_loras,
         )
         loras = input.models.loras if input.models else []
         job_name = prompt_meta.get("prompt_eval", prompt_meta["prompt"])
@@ -350,6 +384,16 @@ class DocumentModel(QObject, ObservableProperties):
         job_params.metadata.update(prompt_meta)
         job_params.metadata["loras"] = [{"name": l.name, "weight": l.strength} for l in loras]
         job_params.metadata["strength"] = strength
+        if self.workspace is Workspace.randomizer:
+            job_params.metadata["source_prompt"] = prompt_meta.get(
+                "prompt_eval", prompt_meta.get("prompt", "")
+            )
+            job_params.metadata["source_lora"] = self.randomizer.last_lora
+            job_params.metadata["source_lora_strength"] = self.randomizer.last_lora_strength
+            job_params.metadata["source_fixed_loras"] = [
+                {"name": item.name, "strength": item.strength}
+                for item in self.randomizer.fixed_lora_inputs()
+            ]
         return input, job_params, original_conditioning
 
     async def enqueue_jobs(
@@ -376,6 +420,9 @@ class DocumentModel(QObject, ObservableProperties):
             if i > 0:
                 input = replace(input, sampling=replace(sampling, seed=seed))
                 if original_cond:  # re-evaluate wildcards in prompts after the seed change
+                    batch_triggers = None
+                    if self.workspace is Workspace.randomizer:
+                        batch_triggers = self.randomizer.loras_from_last_roll()
                     next_prompt = workflow.prepare_prompts(
                         original_cond,
                         self.style,
@@ -383,6 +430,7 @@ class DocumentModel(QObject, ObservableProperties):
                         self.arch,
                         params.inpaint_mode,
                         params.ref_layers,
+                        trigger_loras=batch_triggers,
                     )
                     input.conditioning = next_prompt.conditioning
                     params.metadata = params.metadata | next_prompt.metadata
@@ -730,6 +778,10 @@ class DocumentModel(QObject, ObservableProperties):
                             w=job.params.bounds.width, h=job.params.bounds.height
                         )
                     )
+            if job.kind is JobKind.diffusion and job.params.metadata.get("workspace") == "krea_edit":
+                self.krea_edit._set_status(_("Krea Edit done"))
+            if job.kind is JobKind.diffusion and job.params.metadata.get("workspace") == "qwen_ultra":
+                self.qwen_ultra._set_status(_("Qwen Ultra done — apply from History"))
             self._finish_job(job, message.event)
         elif message.event is ClientEvent.interrupted:
             self._finish_job(job, message.event)
@@ -748,6 +800,10 @@ class DocumentModel(QObject, ObservableProperties):
                 self.seedvr.set_in_progress(False)
                 if event is not ClientEvent.finished:
                     self.seedvr._set_status(_("SeedVR cancelled or failed"))
+        elif job.kind is JobKind.diffusion and job.params.metadata.get("workspace") == "krea_edit":
+            self.krea_edit.set_in_progress(False)
+            if event is not ClientEvent.finished:
+                self.krea_edit._set_status(_("Krea Edit cancelled or failed"))
         elif job.kind is JobKind.describe:
             if job.params.metadata.get("comic_finalize_panel") is not None:
                 self.comic.finish_finalize_job()
@@ -1311,8 +1367,16 @@ class DescribeWorkspace(QObject, ObservableProperties):
     perspective = Property(Perspective.none, persist=True)
     custom_perspective = Property("", persist=True)
     clio_style = Property(CLIO_STYLE_NONE, persist=True)
+    shot_scale = Property(ShotScale.auto, persist=True)
+    prompt_length = Property(PromptLength.detailed, persist=True)
+    style_lock = Property(StyleLock.blend, persist=True)
     draft_text = Property("", persist=True)
     result_text = Property("", persist=True)
+    section_subject = Property("", persist=True)
+    section_setting = Property("", persist=True)
+    section_lighting = Property("", persist=True)
+    section_style = Property("", persist=True)
+    section_tags = Property("", persist=True)
     can_generate = Property(True)
 
     level_changed = pyqtSignal(DescribeLevel)
@@ -1321,8 +1385,16 @@ class DescribeWorkspace(QObject, ObservableProperties):
     perspective_changed = pyqtSignal(Perspective)
     custom_perspective_changed = pyqtSignal(str)
     clio_style_changed = pyqtSignal(str)
+    shot_scale_changed = pyqtSignal(ShotScale)
+    prompt_length_changed = pyqtSignal(PromptLength)
+    style_lock_changed = pyqtSignal(StyleLock)
     draft_text_changed = pyqtSignal(str)
     result_text_changed = pyqtSignal(str)
+    section_subject_changed = pyqtSignal(str)
+    section_setting_changed = pyqtSignal(str)
+    section_lighting_changed = pyqtSignal(str)
+    section_style_changed = pyqtSignal(str)
+    section_tags_changed = pyqtSignal(str)
     can_generate_changed = pyqtSignal(bool)
     modified = pyqtSignal(QObject, str)
 
@@ -1434,6 +1506,9 @@ class DescribeWorkspace(QObject, ObservableProperties):
                     self.custom_perspective,
                     style_name,
                     style_prompt,
+                    shot_scale=self.shot_scale,
+                    prompt_length=self.prompt_length,
+                    style_lock=self.style_lock,
                 )
                 gguf_device = "Auto" if self.gguf_use_cuda else "CPU"
                 input = workflow.prepare_describe(
@@ -1503,6 +1578,9 @@ class DescribeWorkspace(QObject, ObservableProperties):
                 self.custom_perspective,
                 style_name,
                 style_prompt,
+                shot_scale=self.shot_scale,
+                prompt_length=self.prompt_length,
+                style_lock=self.style_lock,
             )
             gguf_device = "Auto" if self.gguf_use_cuda else "CPU"
             input = workflow.prepare_describe(
@@ -1532,7 +1610,38 @@ class DescribeWorkspace(QObject, ObservableProperties):
             text = output.text.strip()
             if self._enrich_output:
                 text = enrich_caption(self.perspective, text, self.custom_perspective)
-            self.result_text = text
+            self.apply_sections_from_text(text)
+
+    def apply_sections_from_text(self, text: str):
+        """Fill section fields from VLM/Florence text and refresh the assembled result."""
+        sections = parse_describe_sections(text)
+        self.section_subject = sections.get("subject", "")
+        self.section_setting = sections.get("setting", "")
+        self.section_lighting = sections.get("lighting", "")
+        self.section_style = sections.get("style", "")
+        self.section_tags = sections.get("tags", "")
+        assembled = assemble_describe_sections(
+            self.section_subject,
+            self.section_setting,
+            self.section_lighting,
+            self.section_style,
+            self.section_tags,
+        )
+        # Prefer assembled prompt when sections parsed cleanly; otherwise keep raw text.
+        has_structure = any(
+            sections.get(k)
+            for k in ("setting", "lighting", "style", "tags")
+        )
+        self.result_text = assembled if has_structure else text
+
+    def assemble_sections_to_result(self):
+        self.result_text = assemble_describe_sections(
+            self.section_subject,
+            self.section_setting,
+            self.section_lighting,
+            self.section_style,
+            self.section_tags,
+        )
 
     def set_in_progress(self, in_progress: bool):
         self._in_progress = in_progress

@@ -19,6 +19,7 @@ from ..text import (
     strip_prompt_comments,
 )
 from ..util import clamp, ensure, median_or_zero, unique
+from ..util import client_logger as log
 from . import resolution, resources
 from .api import (
     CheckpointInput,
@@ -37,6 +38,10 @@ from .api import (
     SamplingInput,
     SeedVRInput,
     UpscaleInput,
+    KreaEditInput,
+    MiniMaxH3Input,
+    QwenUltraInput,
+    QwenUltraMode,
     WanArch,
     WanVideoInput,
     WanVideoMode,
@@ -155,7 +160,12 @@ def _sampler_params(sampling: SamplingInput, extent: Extent, strength: float | N
     return params
 
 
-def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, models: ClientModels):
+def load_checkpoint_with_lora(
+    w: ComfyWorkflow,
+    checkpoint: CheckpointInput,
+    models: ClientModels,
+    apply_krea2_enhancer: bool = True,
+):
     arch = checkpoint.version
     model_info = models.checkpoints.get(checkpoint.checkpoint)
     if model_info is None:
@@ -260,7 +270,11 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
     if arch.supports_attention_guidance and checkpoint.self_attention_guidance:
         model = w.apply_self_attention_guidance(model)
 
-    if arch is Arch.krea2 and "ComfyUI-Krea2T-Enhancer" in models.node_inputs:
+    if (
+        apply_krea2_enhancer
+        and arch is Arch.krea2
+        and "ComfyUI-Krea2T-Enhancer" in models.node_inputs
+    ):
         model = w.krea2_prompt_enhance(model)
 
     return model, Clip(clip, arch), vae
@@ -1717,6 +1731,7 @@ def prepare_prompts(
     ref_layers: dict[str, int] | None = None,
     files: FileLibrary | None = None,
     is_live=False,
+    trigger_loras: list[LoraInput] | None = None,
 ):
     cond = copy(cond)
     files = files or FileLibrary.instance()
@@ -1741,7 +1756,8 @@ def prepare_prompts(
         meta["prompt_eval"] = cond.positive
     cond.positive, extra_loras = extract_loras(cond.positive, files.loras)
     cond.positive = replace_layers(cond.positive, ref_layers, layer_replace)
-    cond.positive += _collect_lora_triggers(models.loras, files)
+    trigger_source = models.loras if trigger_loras is None else trigger_loras
+    cond.positive += _collect_lora_triggers(trigger_source, files)
     if arch.is_flux2:
         cond.positive = build_instructions(cond, arch, inpaint)
     if arch is Arch.krea2:
@@ -1802,6 +1818,7 @@ def prepare(
     is_live: bool = False,
     layer_count: int = 1,
     krea2_augment_encode: bool = False,
+    replace_loras: list[LoraInput] | None = None,
 ) -> WorkflowInput:
     """
     Takes UI model state, prepares images, normalizes inputs, and returns a WorkflowInput object
@@ -1816,7 +1833,10 @@ def prepare(
         i.sampling = sampling_from_style(style, strength, is_live)
     i.sampling.seed = seed
     i.models = style.get_models(models.checkpoints)
-    i.models.loras = unique(i.models.loras + (loras or []), key=lambda l: l.name)
+    if replace_loras is None:
+        i.models.loras = unique(i.models.loras + (loras or []), key=lambda l: l.name)
+    else:
+        i.models.loras = list(replace_loras)
     i.models.dynamic_caching = perf.dynamic_caching
     i.models.tiled_vae = perf.tiled_vae
     i.models.version = arch
@@ -1826,7 +1846,11 @@ def prepare(
 
     model_set = models.for_arch(arch)
     has_ip_adapter = model_set.ip_adapter.find(ControlMode.reference) is not None
-    i.models.loras += _get_sampling_lora(style, is_live, model_set, models)
+    sampling_loras = _get_sampling_lora(style, is_live, model_set, models)
+    if replace_loras is None:
+        i.models.loras += sampling_loras
+    else:
+        i.models.loras = unique(i.models.loras + sampling_loras, key=lambda l: l.name)
     all_control = cond.control + [c for r in cond.regions for c in r.control]
     face_weight = median_or_zero(c.strength for c in all_control if c.mode is ControlMode.face)
     if face_weight > 0:
@@ -2124,6 +2148,676 @@ def seedvr_image(w: ComfyWorkflow, images: ImageInput, params: SeedVRInput) -> C
     w.sample_count += 24
     w.send_image(up)
     return w
+
+
+# --- Krea Edit (comfyui-krea2edit Identity Edit) ---------------------------------
+
+# Prefer ~1.5MP — enough detail to stay sharp after scale-back, still editable.
+KREA_EDIT_MAX_PIXELS = 1_500_000
+IDENTITY_EDIT_LORA_CANDIDATES = (
+    "Krea2/krea2_identity_edit_v1_2.safetensors",
+    "krea2_identity_edit_v1_2.safetensors",
+    "Krea2/krea2_identity_edit_v1.safetensors",
+    "krea2_identity_edit_v1.safetensors",
+)
+
+
+def find_identity_edit_lora(loras: list[str] | None) -> str | None:
+    """Resolve the Identity Edit LoRA path from ComfyUI's lora list."""
+    if not loras:
+        return None
+    normalized = {p.replace("\\", "/").lower(): p for p in loras}
+    for cand in IDENTITY_EDIT_LORA_CANDIDATES:
+        if found := normalized.get(cand.lower()):
+            return found
+    for key, orig in normalized.items():
+        name = key.rsplit("/", 1)[-1]
+        if "identity_edit" in name and name.endswith(".safetensors"):
+            return orig
+    return None
+
+
+def estimate_krea_edit_extent(source: Extent, max_pixels: int = KREA_EDIT_MAX_PIXELS) -> Extent:
+    """Fit canvas into ≤max_pixels, snapped to multiples of 16 (SD3 / Krea2 latent grid)."""
+    extent = source.at_least(16)
+    if extent.pixel_count > max_pixels:
+        extent = extent.scale_to_pixel_count(max_pixels)
+    return extent.multiple_of(16).at_least(16)
+
+
+def prepare_krea_edit(
+    params: KreaEditInput,
+    image: Image,
+    ref_b: Image | None,
+    checkpoint: CheckpointInput,
+    mask: Image | None = None,
+) -> WorkflowInput:
+    """Build WorkflowInput for Krea2 Identity Edit (full-canvas or selection inpaint)."""
+    source_extent = image.extent
+    use_inpaint = bool(params.use_inpaint and mask is not None)
+
+    if use_inpaint:
+        # Keep full canvas for Crop&Stitch; sampling happens on the 1024 crop.
+        edit_extent = source_extent
+        target_size = max(64, int(params.inpaint_target_size or 1024))
+        sample_extent = Extent(target_size, target_size)
+    else:
+        edit_extent = estimate_krea_edit_extent(source_extent)
+        sample_extent = edit_extent
+        if image.extent != edit_extent:
+            image = Image.scale(image, edit_extent)
+        if mask is not None and mask.extent != edit_extent:
+            mask = Image.scale(mask, edit_extent)
+
+    if ref_b is not None and ref_b.extent != sample_extent:
+        # Full path: match edit size. Inpaint: match forced crop (1024) like Image B in v2.
+        ref_b = Image.scale(ref_b, sample_extent)
+
+    images = ImageInput.from_extent(edit_extent if not use_inpaint else source_extent)
+    images.initial_image = image
+    images.hires_image = ref_b  # optional 2nd reference (subject / sheet collage)
+    images.hires_mask = mask if use_inpaint else None
+    # Keep original canvas size as target so we can scale the result back up (full path)
+    # or return the stitched full canvas unchanged (inpaint path).
+    if use_inpaint:
+        images.extent = ExtentInput(source_extent, source_extent, sample_extent, source_extent)
+    else:
+        images.extent = ExtentInput(source_extent, edit_extent, edit_extent, source_extent)
+
+    params = copy(params)
+    params.has_ref_b = ref_b is not None
+    params.use_inpaint = use_inpaint
+
+    i = WorkflowInput(WorkflowKind.krea_edit, images)
+    i.krea_edit = params
+    i.models = checkpoint
+    i.batch_count = 1
+    i.sampling = SamplingInput(
+        params.sampler,
+        params.scheduler,
+        params.cfg_scale,
+        params.steps,
+        seed=params.seed,
+    )
+    return i
+
+
+def krea_edit_image(
+    w: ComfyWorkflow,
+    images: ImageInput,
+    params: KreaEditInput,
+    checkpoint: CheckpointInput,
+    models: ClientModels,
+) -> ComfyWorkflow:
+    """Identity Edit graph, optionally wrapped in InpaintCrop → edit → InpaintStitch."""
+    source = ensure(images.initial_image)
+    edit_extent = images.extent.desired
+    target_extent = images.extent.target
+    use_inpaint = bool(params.use_inpaint and images.hires_mask is not None)
+    crop_size = max(64, int(params.inpaint_target_size or 1024))
+    crop_extent = Extent(crop_size, crop_size)
+
+    # Base Krea2 weights without style LoRAs / Krea2T enhancer (Identity Edit is the adapter)
+    ckpt = copy(checkpoint)
+    ckpt.loras = []
+    ckpt.version = Arch.krea2
+    model, clip, vae = load_checkpoint_with_lora(w, ckpt, models, apply_krea2_enhancer=False)
+
+    if not params.identity_lora:
+        raise RuntimeError(
+            "Identity Edit LoRA not found. Place krea2_identity_edit_v1_2.safetensors "
+            "in ComfyUI/models/loras (e.g. loras/Krea2/) and refresh the connection."
+        )
+
+    # Face LoRA replace mode only when there is no image_b subject/sheet —
+    # image refs are the strong identity path and must keep identity lock.
+    has_face = bool((params.face_lora or "").strip()) and not bool(params.has_ref_b)
+    id_strength = float(params.lora_strength)
+    ref_boost = float(params.ref_boost)
+    grounding_px = max(0, int(params.grounding_px))
+    if has_face:
+        id_strength = min(id_strength, 0.12)
+        ref_boost = min(ref_boost, 0.35)
+        if grounding_px == 0 or grounding_px > 384:
+            grounding_px = 384
+        log.info(
+            "Krea Edit Face REPLACE mode - identity=%.2f ref_boost=%.2f grounding=%d",
+            id_strength,
+            ref_boost,
+            grounding_px,
+        )
+
+    # Identity Edit is a diffusion-path adapter — model weights only.
+    model = w.load_lora_model(model, params.identity_lora, id_strength)
+
+    # Role LoRAs as model+CLIP weights BEFORE ModelPatch (once).
+    identity_key = params.identity_lora.replace("\\", "/").lower()
+    role_keys: set[str] = {identity_key}
+
+    for name, strength, is_face in (
+        (params.style_lora, params.style_lora_strength, False),
+        (params.body_lora, params.body_lora_strength, False),
+        (params.face_lora, params.face_lora_strength, True),
+    ):
+        name = (name or "").strip()
+        if not name:
+            continue
+        key = name.replace("\\", "/").lower()
+        if key in role_keys:
+            continue
+        role_keys.add(key)
+        strength = float(strength)
+        if is_face:
+            # Enough to push identity; keep under the blur/oversat cliff.
+            strength = max(1.0, min(strength, 1.2))
+        model, clip_out = w.load_lora(model, clip.model, name, strength, strength)
+        clip = Clip(clip_out, clip.arch)
+        if is_face:
+            log.info("Krea Edit: Face LoRA weights loaded %s @ %.2f (model+CLIP)", name, strength)
+
+    for extra in params.extra_loras or []:
+        name = (extra.name or "").strip()
+        if not name:
+            continue
+        if name.replace("\\", "/").lower() in role_keys:
+            continue
+        strength = float(extra.strength)
+        model, clip_out = w.load_lora(model, clip.model, name, strength, strength)
+        clip = Clip(clip_out, clip.arch)
+
+    # Unique ids every run so ComfyUI cannot reuse a prior LoadImageCache /
+    # ModelPatch result when chaining edits on a flattened canvas.
+    full_img = w.load_image_unique(source)
+
+    stitcher = None
+    if use_inpaint:
+        mask_img = w.load_mask(ensure(images.hires_mask))
+        # Do NOT connect edit mask to ref_boost_mask — that resists the edit.
+        stitcher, source_img, _cropped_mask = w.add(
+            "InpaintCropImproved",
+            3,
+            image=full_img,
+            mask=mask_img,
+            downscale_algorithm="bilinear",
+            upscale_algorithm="bicubic",
+            preresize=False,
+            preresize_mode="ensure minimum resolution",
+            preresize_min_width=crop_size,
+            preresize_min_height=crop_size,
+            preresize_max_width=16384,
+            preresize_max_height=16384,
+            mask_fill_holes=True,
+            mask_expand_pixels=max(0, int(params.mask_expand_pixels)),
+            mask_invert=False,
+            mask_blend_pixels=max(0, min(64, int(params.mask_blend_pixels))),
+            mask_hipass_filter=0.1,
+            extend_for_outpainting=False,
+            extend_up_factor=1.0,
+            extend_down_factor=1.0,
+            extend_left_factor=1.0,
+            extend_right_factor=1.0,
+            context_from_mask_extend_factor=max(1.0, float(params.context_factor)),
+            output_resize_to_target_size=True,
+            output_target_width=crop_size,
+            output_target_height=crop_size,
+            output_padding="32",
+            device_mode=params.inpaint_device_mode or "gpu (much faster)",
+        )
+        sample_extent = crop_extent
+        log.info(
+            "Krea Edit inpaint crop: expand=%d blend=%d context=%.2f target=%d",
+            int(params.mask_expand_pixels),
+            int(params.mask_blend_pixels),
+            float(params.context_factor),
+            crop_size,
+        )
+    else:
+        source_img = full_img
+        sample_extent = edit_extent
+
+    source_latent = w.vae_encode(vae, source_img)
+
+    ref_b = images.hires_image
+    source_img_b = w.load_image_unique(ref_b) if ref_b is not None else None
+    source_latent_b = w.vae_encode(vae, source_img_b) if source_img_b is not None else None
+
+    patch_inputs: dict[str, Any] = {
+        "model": model,
+        "source_latent": source_latent,
+        "ref_boost": ref_boost,
+        "ref_boost_a": float(params.ref_boost_a),
+        "fit_mode": params.fit_mode or "fit",
+        "vae": vae,
+        "source_image": source_img,
+    }
+    if source_latent_b is not None and source_img_b is not None:
+        patch_inputs["source_latent_b"] = source_latent_b
+        patch_inputs["source_image_b"] = source_img_b
+    model = w.add("Krea2EditModelPatch", 1, **patch_inputs)
+
+    files = FileLibrary.instance()
+    prompt_text = _krea_edit_build_prompt(params, files)
+
+    pos_inputs: dict[str, Any] = {
+        "clip": clip.model,
+        "prompt": prompt_text,
+        "image": source_img,
+        "grounding_px": grounding_px,
+    }
+    neg_inputs: dict[str, Any] = {
+        "clip": clip.model,
+        "prompt": params.negative or "",
+        "image": source_img,
+        "grounding_px": grounding_px,
+    }
+    if source_img_b is not None:
+        pos_inputs["image_b"] = source_img_b
+        neg_inputs["image_b"] = source_img_b
+    positive = w.add("Krea2EditGroundedEncode", 1, **pos_inputs)
+    negative = w.add("Krea2EditGroundedEncode", 1, **neg_inputs)
+
+    latent = w.empty_latent_image(sample_extent, Arch.krea2, batch_size=1)
+    sampled = w.ksampler(
+        model,
+        ConditioningOutput(positive, negative),
+        latent,
+        sampler=params.sampler or "euler",
+        scheduler=params.scheduler or "simple",
+        steps=max(1, int(params.steps)),
+        cfg=float(params.cfg_scale),
+        denoise=1.0,
+        seed=int(params.seed) & 0xFFFFFFFF,
+    )
+    decoded = w.vae_decode(vae, sampled)
+
+    if use_inpaint and stitcher is not None:
+        # Stitch preserves unmasked pixels from the original (no whole-canvas re-encode).
+        decoded = w.add("InpaintStitchImproved", 1, stitcher=stitcher, inpainted_image=decoded)
+    elif target_extent != sample_extent:
+        decoded = w.scale_image(decoded, target_extent, method="lanczos")
+
+    w.send_image(decoded)
+    return w
+
+
+def prepare_minimax_h3(params: MiniMaxH3Input, seed: int) -> WorkflowInput:
+    """Build a WorkflowInput for MiniMax H3 Reference→Video."""
+    # H3 docs: multiples of 32; short edge rules handled by the node when refs are large
+    width = multiple_of(max(32, params.width), 32)
+    height = multiple_of(max(32, params.height), 32)
+    length = max(24, int(params.length))
+    fps = max(1, int(params.fps or 24))
+    params = MiniMaxH3Input(
+        prompt=params.prompt,
+        width=width,
+        height=height,
+        length=length,
+        fps=fps,
+        unet=params.unet,
+        text_encoder=params.text_encoder,
+        video_vae=params.video_vae,
+        audio_vae=params.audio_vae,
+        steps=max(1, int(params.steps)),
+        cfg=float(params.cfg),
+        sampler=params.sampler or "res_multistep",
+        scheduler=params.scheduler or "simple",
+        shift_video=float(params.shift_video),
+        shift_audio=float(params.shift_audio),
+        ref_image_size=params.ref_image_size or "match",
+        ref_images=list(params.ref_images[:6]),
+        audio_filename=(params.audio_filename or "").strip(),
+        loras=list(params.loras),
+    )
+    # Dummy ImageInput extent so serializers / cost helpers have a canvas size
+    extent = Extent(width, height)
+    images = ImageInput(ExtentInput(extent, extent, extent, extent))
+    if params.ref_images:
+        images.initial_image = params.ref_images[0]
+    i = WorkflowInput(WorkflowKind.minimax_h3, images)
+    i.minimax_h3 = params
+    i.sampling = SamplingInput(
+        sampler=params.sampler,
+        scheduler=params.scheduler,
+        cfg_scale=params.cfg,
+        total_steps=params.steps,
+        seed=seed,
+    )
+    i.batch_count = 1
+    return i
+
+
+def minimax_h3(
+    w: ComfyWorkflow,
+    params: MiniMaxH3Input,
+    seed: int,
+) -> ComfyWorkflow:
+    """Native MiniMax H3 R2V graph (Comfy ≥0.30) with optional turbo LoRAs.
+
+    Mirrors the extreme-fast reference workflow core:
+    UNET + CLIP(minimax) + video/audio VAE → MiniMaxH3SigmaShift →
+    MiniMaxH3ReferenceToVideo → SamplerCustomAdvanced → VAEDecode → frames.
+    """
+    if not params.unet:
+        raise ValueError(
+            "MiniMax H3 needs a REF2VA diffusion model in ComfyUI/models/diffusion_models "
+            "(e.g. minimax_h3_ref2va_pruned_int8_convrot.safetensors)."
+        )
+    if not params.text_encoder:
+        raise ValueError(
+            "MiniMax H3 needs a minimax text encoder in ComfyUI/models/text_encoders "
+            "(e.g. qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors)."
+        )
+    if not params.video_vae or not params.audio_vae:
+        raise ValueError(
+            "MiniMax H3 needs both video and audio VAEs in ComfyUI/models/vae "
+            "(minimax_h3_video_vae_* and minimax_h3_audio_vae_*)."
+        )
+
+    model = w.load_diffusion_model(params.unet)
+    for lora in params.loras:
+        if lora.name:
+            model = w.load_lora_model(model, lora.name, lora.strength)
+    model = w.add(
+        "MiniMaxH3SigmaShift",
+        1,
+        model=model,
+        shift_video=params.shift_video,
+        shift_audio=params.shift_audio,
+    )
+
+    clip = w.load_clip(params.text_encoder, type="minimax")
+    video_vae = w.load_vae(params.video_vae)
+    audio_vae = w.load_vae(params.audio_vae)
+
+    prompt = _ensure_h3_picture_tags(params.prompt, len(params.ref_images), bool(params.audio_filename))
+
+    r2v_inputs: dict[str, Any] = {
+        "clip": clip,
+        "vae": video_vae,
+        "audio_vae": audio_vae,
+        "prompt": prompt,
+        "width": params.width,
+        "height": params.height,
+        "length": params.length,
+        "ref_image_size": params.ref_image_size or "match",
+    }
+    for idx, image in enumerate(params.ref_images[:6]):
+        r2v_inputs[f"ref_images.ref_image_{idx}"] = w.load_image(image)
+
+    if params.audio_filename:
+        # LoadAudio expects a file already present under ComfyUI/input/
+        audio = w.add("LoadAudio", 1, audio=params.audio_filename)
+        r2v_inputs["ref_audios.ref_audio_0"] = audio
+
+    positive, latent = w.add("MiniMaxH3ReferenceToVideo", 2, **r2v_inputs)
+
+    steps = max(1, params.steps)
+    w.sample_count += steps
+    guider = w.basic_guider(model, positive)
+    sigmas = w.add(
+        "BasicScheduler",
+        1,
+        model=model,
+        scheduler=params.scheduler or "simple",
+        steps=steps,
+        denoise=1.0,
+    )
+    # Use output (index 0) — H3 audio+video latent shares this for both decoders
+    latent_out, _denoised = w.add(
+        "SamplerCustomAdvanced",
+        2,
+        noise=w.random_noise(seed),
+        guider=guider,
+        sampler=w.sampler_select(params.sampler or "res_multistep"),
+        sigmas=sigmas,
+        latent_image=latent,
+    )
+    frames = w.vae_decode(video_vae, latent_out)
+    w.send_image(frames)
+    # Decode joint NestedTensor audio; save MP3 and optional muxed MP4 (VHS).
+    if "VAEDecodeAudio" in w.node_defs and "SaveAudioMP3" in w.node_defs:
+        audio = w.add("VAEDecodeAudio", 1, samples=latent_out, vae=audio_vae)
+        w.add(
+            "SaveAudioMP3",
+            1,
+            audio=audio,
+            filename_prefix="minimax_h3/krita",
+            quality="320k",
+        )
+        if "VHS_VideoCombine" in w.node_defs:
+            # Video Helper Suite — reliable h264+audio mux into ComfyUI/output
+            w.add(
+                "VHS_VideoCombine",
+                1,
+                images=frames,
+                audio=audio,
+                frame_rate=float(params.fps or 24),
+                loop_count=0,
+                filename_prefix="minimax_h3/krita",
+                format="video/h264-mp4",
+                pingpong=False,
+                save_output=True,
+                pix_fmt="yuv420p",
+                crf=19,
+                save_metadata=True,
+                trim_to_audio=False,
+            )
+    return w
+
+
+def _ensure_h3_picture_tags(prompt: str, n_images: int, has_audio: bool) -> str:
+    """If the user omitted <Picture N> / <Audio N> tags, prepend a short reference line."""
+    text = (prompt or "").strip()
+    lower = text.lower()
+    needs_picture = n_images > 0 and "<picture" not in lower
+    needs_audio = has_audio and "<audio" not in lower
+    if not needs_picture and not needs_audio:
+        return text
+    parts: list[str] = []
+    if needs_picture:
+        pics = " and ".join(f"<Picture {i}>" for i in range(1, n_images + 1))
+        parts.append(f"Use {pics} as reference frames.")
+    if needs_audio:
+        parts.append("Use <Audio 1> exactly as it is.")
+    prefix = " ".join(parts)
+    return f"{prefix}\n{text}".strip() if text else prefix
+
+
+def prepare_qwen_ultra(params: QwenUltraInput, seed: int) -> WorkflowInput:
+    """Build WorkflowInput for Qwen Image Edit 2.1 Ultra modes."""
+    width = multiple_of(max(32, params.width), 32)
+    height = multiple_of(max(32, params.height), 32)
+    params = QwenUltraInput(
+        mode=params.mode,
+        prompt=params.prompt,
+        negative=params.negative,
+        width=width,
+        height=height,
+        megapixels=max(0.1, float(params.megapixels)),
+        resolution=max(0, int(params.resolution)),
+        unet=params.unet,
+        text_encoder=params.text_encoder,
+        vae=params.vae,
+        steps=max(1, int(params.steps)),
+        cfg=float(params.cfg),
+        sampler=params.sampler or "euler",
+        scheduler=params.scheduler or "simple",
+        denoise=float(clamp(params.denoise, 0.0, 1.0)),
+        seed=int(seed),
+        images=list(params.images[:11]),
+        mask=params.mask,
+        pad_left=max(0, int(params.pad_left)),
+        pad_top=max(0, int(params.pad_top)),
+        pad_right=max(0, int(params.pad_right)),
+        pad_bottom=max(0, int(params.pad_bottom)),
+        loras=list(params.loras),
+    )
+    extent = Extent(width, height)
+    images = ImageInput(ExtentInput(extent, extent, extent, extent))
+    if params.images:
+        images.initial_image = params.images[0]
+    i = WorkflowInput(WorkflowKind.qwen_ultra, images)
+    i.qwen_ultra = params
+    i.sampling = SamplingInput(
+        sampler=params.sampler,
+        scheduler=params.scheduler,
+        cfg_scale=params.cfg,
+        total_steps=params.steps,
+        seed=seed,
+    )
+    return i
+
+
+def qwen_ultra(w: ComfyWorkflow, params: QwenUltraInput, seed: int) -> ComfyWorkflow:
+    """Native Qwen Image 2.1 Ultra graph (Comfy ≥0.38 TextEncodeQwenImage21 preferred)."""
+    if not params.unet or not params.text_encoder or not params.vae:
+        raise ValueError(
+            "Qwen Ultra needs diffusion model + text encoder + VAE "
+            "(qwen_image_2.1_*, qwen3vl_*, texture_fix_vae_for_qwen_image_2.1_*)."
+        )
+
+    model = w.load_diffusion_model(params.unet)
+    for lora in params.loras:
+        if lora.name:
+            model = w.load_lora_model(model, lora.name, lora.strength)
+
+    clip = w.load_clip(params.text_encoder, type="qwen_image")
+    vae = w.load_vae(params.vae)
+
+    prompt = _ensure_qwen_ultra_tags(params.prompt, len(params.images), params.mode)
+    mode = params.mode
+
+    loaded_images: list[Output] = []
+    for img in params.images:
+        loaded_images.append(w.load_image(img))
+
+    # Optional outpaint pad on base image
+    if mode is QwenUltraMode.outpaint and loaded_images:
+        pad = (
+            params.pad_left,
+            params.pad_top,
+            params.pad_right,
+            params.pad_bottom,
+        )
+        if any(p > 0 for p in pad) and "ImagePadForOutpaint" in w.node_defs:
+            padded, mask = w.add(
+                "ImagePadForOutpaint",
+                2,
+                image=loaded_images[0],
+                left=params.pad_left,
+                top=params.pad_top,
+                right=params.pad_right,
+                bottom=params.pad_bottom,
+                feathering=40,
+            )
+            loaded_images[0] = padded
+            # keep mask for noise if we have one
+            if params.mask is None:
+                # ImagePadForOutpaint mask is invert of known area — use as noise mask
+                outpaint_mask = mask
+            else:
+                outpaint_mask = None
+        else:
+            outpaint_mask = None
+    else:
+        outpaint_mask = None
+
+    # Scale base / refs toward target megapixels for edit modes
+    scaled: list[Output] = []
+    if mode is not QwenUltraMode.t2i and loaded_images:
+        for i, img_out in enumerate(loaded_images):
+            if i == 0 and "ImageScaleToTotalPixels" in w.node_defs:
+                scaled.append(
+                    w.image_scale_to_total_pixels(img_out, megapixels=params.megapixels)
+                )
+            else:
+                scaled.append(img_out)
+    else:
+        scaled = loaded_images
+
+    use_21 = "TextEncodeQwenImage21" in w.node_defs
+    if use_21:
+        if mode is QwenUltraMode.t2i:
+            positive, negative, latent = w.text_encode_qwen_image_21(
+                clip,
+                prompt=prompt,
+                negative_prompt=params.negative,
+                resolution=params.resolution or max(params.width, params.height),
+                vae=vae,
+                images=None,
+            )
+            # Prefer empty latent at exact canvas size when available
+            latent = w.empty_latent_image(Extent(params.width, params.height), Arch.qwen)
+        else:
+            positive, negative, latent = w.text_encode_qwen_image_21(
+                clip,
+                prompt=prompt,
+                negative_prompt=params.negative,
+                resolution=0,
+                vae=vae,
+                images=scaled,
+            )
+    else:
+        # Fallback: older Edit / EditPlus nodes (positive only)
+        if mode is QwenUltraMode.t2i:
+            positive = w.clip_text_encode(clip, prompt)
+            negative = w.clip_text_encode(clip, params.negative or " ")
+            latent = w.empty_latent_image(Extent(params.width, params.height), Arch.qwen)
+        elif len(scaled) >= 2 and "TextEncodeQwenImageEditPlus" in w.node_defs:
+            positive = w.text_encode_qwen_image_edit_plus(clip, vae, scaled[:3], prompt)
+            negative = w.clip_text_encode(clip, params.negative or " ")
+            latent = w.vae_encode(vae, scaled[0])
+        elif scaled and "TextEncodeQwenImageEdit" in w.node_defs:
+            positive = w.text_encode_qwen_image_edit(clip, vae, scaled[0], prompt)
+            negative = w.clip_text_encode(clip, params.negative or " ")
+            latent = w.vae_encode(vae, scaled[0])
+        else:
+            raise ValueError(
+                "Qwen Ultra needs TextEncodeQwenImage21 (ComfyUI ≥0.38) "
+                "or TextEncodeQwenImageEdit / EditPlus."
+            )
+
+    # Inpaint / outpaint noise mask
+    if mode is QwenUltraMode.inpaint and params.mask is not None:
+        mask_out = w.load_mask(params.mask)
+        latent = w.add("SetLatentNoiseMask", 1, samples=latent, mask=mask_out)
+    elif mode is QwenUltraMode.outpaint and outpaint_mask is not None:
+        latent = w.add("SetLatentNoiseMask", 1, samples=latent, mask=outpaint_mask)
+
+    cond = ConditioningOutput(positive, negative)
+    samples = w.ksampler(
+        model,
+        cond,
+        latent,
+        sampler=params.sampler,
+        scheduler=params.scheduler,
+        steps=params.steps,
+        cfg=params.cfg,
+        denoise=params.denoise,
+        seed=seed,
+    )
+    decoded = w.vae_decode(vae, samples)
+    w.send_image(decoded)
+    return w
+
+
+def _ensure_qwen_ultra_tags(prompt: str, n_images: int, mode: QwenUltraMode) -> str:
+    """Prepend <imageN> hints when the Ultra-style tags are missing."""
+    text = (prompt or "").strip()
+    if mode is QwenUltraMode.t2i or n_images <= 0:
+        return text
+    lower = text.lower()
+    if "<image" in lower or "picture " in lower or "<picture" in lower:
+        return text
+    if mode is QwenUltraMode.outpaint:
+        default = (
+            "Outpaint the image: replace the solid gray areas with a seamless "
+            "continuation of the scene, keeping the existing picture unchanged."
+        )
+        return text or default
+    tags = " ".join(f"<image{i}>" for i in range(1, n_images + 1))
+    hint = f"Use {tags} as references."
+    return f"{hint}\n{text}".strip() if text else hint
 
 
 def prepare_wan_video(
@@ -2484,8 +3178,28 @@ def create(i: WorkflowInput, models: ClientModels, comfy_mode=ComfyRunMode.serve
             ensure(i.wan_video),
             ensure(i.sampling).seed,
         )
+    elif i.kind is WorkflowKind.minimax_h3:
+        return minimax_h3(
+            workflow,
+            ensure(i.minimax_h3),
+            ensure(i.sampling).seed,
+        )
+    elif i.kind is WorkflowKind.qwen_ultra:
+        return qwen_ultra(
+            workflow,
+            ensure(i.qwen_ultra),
+            ensure(i.sampling).seed,
+        )
     elif i.kind is WorkflowKind.seedvr:
         return seedvr_image(workflow, ensure(i.images), ensure(i.seedvr))
+    elif i.kind is WorkflowKind.krea_edit:
+        return krea_edit_image(
+            workflow,
+            ensure(i.images),
+            ensure(i.krea_edit),
+            ensure(i.models),
+            models,
+        )
     elif i.kind is WorkflowKind.custom:
         seed = ensure(i.sampling).seed
         return expand_custom(
@@ -2542,6 +3256,81 @@ def _collect_lora_triggers(loras: list[LoraInput], files: FileLibrary):
 
     result = " ".join(trigger_words(lora) for lora in loras)
     return " " + result if result else ""
+
+
+def _lora_trigger_text(name: str, files: FileLibrary) -> str:
+    if not name:
+        return ""
+    if file := files.loras.find(name):
+        return (file.meta("lora_triggers", "") or "").strip()
+    # Also try basename match — UI sometimes stores path variants
+    base = name.replace("\\", "/").rsplit("/", 1)[-1]
+    for f in files.loras:
+        if f.id.replace("\\", "/").rsplit("/", 1)[-1].lower() == base.lower():
+            return (f.meta("lora_triggers", "") or "").strip()
+    return ""
+
+
+def _krea_edit_build_prompt(params: KreaEditInput, files: FileLibrary) -> str:
+    """Assemble edit instruction with LoRA triggers first (CLIP activation), then guidance."""
+    triggers: list[str] = []
+    for name in (params.face_lora, params.body_lora, params.style_lora):
+        if t := _lora_trigger_text(name or "", files):
+            if t not in triggers:
+                triggers.append(t)
+    if params.extra_loras:
+        for extra in params.extra_loras:
+            if t := _lora_trigger_text(extra.name, files):
+                if t not in triggers:
+                    triggers.append(t)
+
+    parts: list[str] = []
+    if params.face_lora:
+        trigger = _lora_trigger_text(params.face_lora, files)
+        who = f'"{trigger}"' if trigger else "the Face LoRA character"
+        # Lead with an explicit swap so grounded encode doesn't just retouch
+        # the source face it can still see in the image tokens.
+        parts.append(
+            f"Face swap: completely replace the person's face with {who}. "
+            f"This must be a different person — new eyes, nose, mouth, jaw, "
+            f"and skin. Do not clean up or beautify the original face. "
+            f"Ignore facial identity from the reference image."
+        )
+        if trigger:
+            parts.append(trigger)
+    elif triggers:
+        parts.append(" ".join(triggers))
+    if (params.prompt or "").strip():
+        parts.append(params.prompt.strip())
+    guidance = _krea_edit_role_lora_guidance(params, files).strip()
+    if guidance:
+        parts.append(guidance)
+    return " ".join(parts)
+
+
+def _krea_edit_role_lora_guidance(params: KreaEditInput, files: FileLibrary) -> str:
+    """Append role-scoped confinement instructions for Face/Body/Style LoRAs."""
+    chunks: list[str] = []
+    if params.style_lora:
+        chunks.append(
+            "Apply the style LoRA to overall rendering style, medium, and aesthetic. "
+            "Do not let it replace facial identity or body proportions."
+        )
+    if params.body_lora:
+        chunks.append(
+            "Apply the body LoRA to body shape, anatomy, physique, and pose silhouette. "
+            "Do not change facial identity from this LoRA."
+        )
+    if params.face_lora:
+        trigger = _lora_trigger_text(params.face_lora, files)
+        who = f' "{trigger}"' if trigger else " the Face LoRA character"
+        chunks.append(
+            f"The final face must be{who} only. Keep body, clothing, pose, "
+            "camera, and background from the source / edit instruction."
+        )
+    if not chunks:
+        return ""
+    return " " + " ".join(chunks)
 
 
 def _check_server_has_loras(

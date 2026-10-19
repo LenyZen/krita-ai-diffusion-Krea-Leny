@@ -1,0 +1,65 @@
+---
+title: Randomizer
+description: Roll a prompt and a LoRA, keep other LoRAs on every image, or have Ollama write the prompt.
+---
+
+Randomizer is a workspace under Generate. One click builds a prompt from your lists, picks one LoRA from a stack, and keeps a separate set of LoRAs on every image. The style you have selected still supplies the checkpoint, sampler, steps, CFG, negative prompt, and any sampler LoRA that style requires.
+
+Lists and the current LoRA stack are saved with the document. Named prompt sets and named LoRA sets are saved for every document:
+
+- `%APPDATA%\krita\ai_diffusion\randomizer_sets.json`
+- `%APPDATA%\krita\ai_diffusion\randomizer_lora_sets.json`
+
+Installing a new copy of the plugin does not delete those files.
+
+## Chooser
+
+**The Chooser** is seven text boxes: Subject, Place, Wearing, Action, Mood, Shot, and Extras. Separate entries with commas or new lines. Generate uses one entry from each box that has text, in the order subject, wearing, action, place, mood, shot, extras.
+
+**Populate defaults** adds 20 starter lines to each box. Lines you already have stay. It does not change LoRAs, and it skips a line that is already there.
+
+**Save** and **Load** store the seven boxes under a name such as `sci fi` or `old west`. Load replaces the seven boxes. It does not replace either LoRA list. The Load window has **Delete**.
+
+## LoRA stack
+
+**Add LoRAs to the stack** holds up to 25 LoRAs. Each Generate picks one of them at the strength you set.
+
+**Save** and **Load** store that stack under a name. Load replaces the stack. The Chooser lists stay as they are.
+
+LoRAs saved on the style are not added on top of this pick. A LoRA the sampler itself requires, such as a turbo adapter on the style, still applies.
+
+## Always apply
+
+**Always apply these LoRAs** holds up to 8 LoRAs. Every one of them is applied on every Generate, together with the one LoRA picked from the stack. If the random pick is the same file as one already in this list, that file is applied once.
+
+This list is saved with the document. It does not have its own named sets.
+
+## Last roll
+
+The box above **Generate** shows the prompt and LoRAs from the last click.
+
+- Drag the bar between this box and **Generate** to change its height.
+- The scrollbar on the right moves through a long prompt.
+- **Copy** copies the whole box, or only the highlighted part if you have a selection.
+- Ctrl+C and right-click **Copy** do the same.
+
+## History
+
+Each result has a three-dot menu. **Show source** opens the prompt and the LoRAs used for that image. Lines marked **Always** are the fixed LoRAs. The line marked **Random** is the stack pick.
+
+A batch from one click is one roll. Extra images in that batch keep the same prompt and LoRAs and use different seeds.
+
+## Write prompt
+
+**Write prompt** asks a local [Ollama](https://ollama.com) model to write one image prompt. Ollama needs to be running at `http://127.0.0.1:11434`. The model menu lists what Ollama has installed. This build starts on `jimscard/new-adult-writer:latest` when that model is present.
+
+The seven dropdowns use the same titles as the Chooser, with 40 choices each. **Random themes** picks one choice in each dropdown.
+
+**Free idea** is a text box for a line or two. **Include dropdown themes** chooses what gets sent:
+
+- Checked: the free idea and the seven dropdowns. The idea leads. A dropdown theme is kept when it fits the idea.
+- Unchecked: only the free idea.
+
+If the free idea box is empty, the dropdown themes are still sent.
+
+**Ask Ollama** fills the result box. **Use this prompt** stores that text and turns on **Use written prompt**. While that box is checked, Generate uses the written prompt instead of the Chooser roll. The LoRA stack and the Always list still apply. Turn **Use written prompt** off to go back to the lists.

@@ -178,7 +178,8 @@ def encode_json(obj: Any):
 
 
 def read_json_with_comments(path: Path):
-    lines = path.read_text().splitlines()
+    # utf-8-sig strips an accidental BOM (e.g. from PowerShell Set-Content -Encoding utf8)
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
     return json.loads("\n".join("" if line.strip().startswith("//") else line for line in lines))
 
 

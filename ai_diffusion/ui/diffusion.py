@@ -36,6 +36,10 @@ from .comic import ComicWidget
 from .generation import GenerationWidget
 from .live import LiveWidget
 from .seedvr import SeedVRWidget
+from .krea_edit import KreaEditWidget
+from .minimax_h3 import MiniMaxH3Widget
+from .qwen_ultra import QwenUltraWidget
+from .randomizer import RandomizerWidget
 from .upscale import UpscaleWidget
 
 
@@ -316,6 +320,10 @@ class ImageDiffusionWidget(DockWidget):
         self._comic = ComicWidget()
         self._animate = AnimateWidget()
         self._seedvr = SeedVRWidget()
+        self._krea_edit = KreaEditWidget()
+        self._minimax_h3 = MiniMaxH3Widget()
+        self._qwen_ultra = QwenUltraWidget()
+        self._randomizer = RandomizerWidget()
         self._frame = _WorkspaceStack(self)
         self._frame.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         self._frame.addWidget(self._welcome)
@@ -331,6 +339,10 @@ class ImageDiffusionWidget(DockWidget):
         self._frame.addWidget(self._comic)
         self._frame.addWidget(self._animate)
         self._frame.addWidget(self._seedvr)
+        self._frame.addWidget(self._krea_edit)
+        self._frame.addWidget(self._minimax_h3)
+        self._frame.addWidget(self._qwen_ultra)
+        self._frame.addWidget(self._randomizer)
         self.setWidget(self._frame)
         # Allow the dock to shrink; stacked pages must not dictate a huge min width
         self.setMinimumWidth(180)
@@ -398,6 +410,18 @@ class ImageDiffusionWidget(DockWidget):
         elif model.workspace is Workspace.seedvr:
             self._seedvr.model = model
             self._frame.setCurrentWidget(self._seedvr)
+        elif model.workspace is Workspace.krea_edit:
+            self._krea_edit.model = model
+            self._frame.setCurrentWidget(self._krea_edit)
+        elif model.workspace is Workspace.minimax_h3:
+            self._minimax_h3.model = model
+            self._frame.setCurrentWidget(self._minimax_h3)
+        elif model.workspace is Workspace.qwen_ultra:
+            self._qwen_ultra.model = model
+            self._frame.setCurrentWidget(self._qwen_ultra)
+        elif model.workspace is Workspace.randomizer:
+            self._randomizer.model = model
+            self._frame.setCurrentWidget(self._randomizer)
         # Recompute dock size constraints when the page changes
         self._frame.updateGeometry()
         self.updateGeometry()

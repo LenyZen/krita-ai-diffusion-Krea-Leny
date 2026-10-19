@@ -20,8 +20,16 @@ def generate():
             model.comic.generate_page()  # full-quality page; use Draft/Refine buttons for rough-in
         elif model.workspace is Workspace.animate:
             model.animate.generate()
+        elif model.workspace is Workspace.minimax_h3:
+            model.minimax_h3.generate()
+        elif model.workspace is Workspace.qwen_ultra:
+            model.qwen_ultra.generate()
         elif model.workspace is Workspace.seedvr:
             model.seedvr.enhance()
+        elif model.workspace is Workspace.krea_edit:
+            model.krea_edit.generate()
+        elif model.workspace is Workspace.randomizer:
+            model.generate()
 
 
 def cancel_active():
@@ -51,6 +59,10 @@ def apply():
             Workspace.vector_cnc,
             Workspace.comic,
             Workspace.animate,
+            Workspace.minimax_h3,
+            Workspace.krea_edit,
+            Workspace.qwen_ultra,
+            Workspace.randomizer,
         ) and len(model.jobs.selection) > 0:
             model.apply_generated_result(*model.jobs.selection[0])
         elif model.workspace is Workspace.live:

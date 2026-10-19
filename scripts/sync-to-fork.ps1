@@ -76,10 +76,8 @@ $copyMap = @(
     @{ From = "ai_diffusion.desktop"; To = "ai_diffusion.desktop"; Required = $true },
     @{ From = "INSTALL-BETA.txt"; To = "INSTALL-BETA.txt"; Required = $true },
     @{ From = "CHANGELOG-BETA.txt"; To = "CHANGELOG-BETA.txt"; Required = $true },
-    @{ From = "INSTALL-KREA2-DESCRIBE.txt"; To = "INSTALL-KREA2-DESCRIBE.txt"; Required = $false },
     @{ From = "scripts\build-beta-package.ps1"; To = "scripts\build-beta-package.ps1"; Required = $true },
     @{ From = "scripts\sync-to-fork.ps1"; To = "scripts\sync-to-fork.ps1"; Required = $true },
-    @{ From = "krita-ai-krea2-describe\tooling-nodes-api.py"; To = "tooling-nodes-api.py"; Required = $false },
     @{ From = "tooling-nodes-api.py"; To = "tooling-nodes-api.py"; Required = $false }
 )
 

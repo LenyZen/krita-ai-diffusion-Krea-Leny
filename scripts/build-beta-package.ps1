@@ -18,10 +18,9 @@ $zipPath = Join-Path $distRoot "$stageName-$stamp.zip"
 
 $pluginSrc = Join-Path $Root "ai_diffusion"
 $desktopSrc = Join-Path $Root "ai_diffusion.desktop"
-$toolingSrc = Join-Path $Root "krita-ai-krea2-describe\tooling-nodes-api.py"
+$toolingSrc = Join-Path $Root "tooling-nodes-api.py"
 $installSrc = Join-Path $Root "INSTALL-BETA.txt"
 $changelogSrc = Join-Path $Root "CHANGELOG-BETA.txt"
-$legacyInstallSrc = Join-Path $Root "INSTALL-KREA2-DESCRIBE.txt"
 
 foreach ($p in @($pluginSrc, $desktopSrc, $toolingSrc, $installSrc, $changelogSrc)) {
     if (-not (Test-Path $p)) { throw "Missing required path: $p" }
@@ -61,9 +60,6 @@ Copy-Item -LiteralPath $desktopSrc -Destination (Join-Path $stage "ai_diffusion.
 Copy-Item -LiteralPath $toolingSrc -Destination (Join-Path $stage "tooling-nodes-api.py") -Force
 Copy-Item -LiteralPath $installSrc -Destination (Join-Path $stage "INSTALL-BETA.txt") -Force
 Copy-Item -LiteralPath $changelogSrc -Destination (Join-Path $stage "CHANGELOG-BETA.txt") -Force
-if (Test-Path $legacyInstallSrc) {
-    Copy-Item -LiteralPath $legacyInstallSrc -Destination (Join-Path $stage "INSTALL-KREA2-DESCRIBE.txt") -Force
-}
 
 # Sanity checks
 $websockets = Join-Path $pluginDest "websockets"

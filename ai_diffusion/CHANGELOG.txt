@@ -1,0 +1,23 @@
+AI Image Diffusion — changelog for this package
+==============================================
+
+1.52.1-beta.3 + Randomizer   (2026-10-19)
+-----------------------------------------
+Randomizer workspace
+  * Chooser lists: subject, place, wearing, action, mood, shot, extras
+  * Populate defaults (20 starter lines, existing text kept, LoRAs untouched)
+  * Named prompt sets, saved outside the document, with Delete on Load
+  * LoRA stack up to 25; each Generate picks one
+  * Named LoRA sets, separate from prompt sets
+  * Always-on LoRAs, up to 8, applied with the random pick
+  * Last-roll box: drag to resize, side scrollbar, Copy / Ctrl+C
+  * History → Show source, with Always and Random LoRA lines
+  * Write prompt via local Ollama
+  * Free idea, with a switch to send the idea alone or with the dropdowns
+  * Docs: workflows/README_RANDOMIZER.md and INSTALL.txt
+
+Base
+  * Krita AI Diffusion 1.52.1-beta.3 (Krea 2, Describe, Augment, Comic,
+    SVG / CNC, Wan Animate, SeedVR Enhance, Krea Edit)
+
+This package is the plugin only. ComfyUI and model weights are not included.

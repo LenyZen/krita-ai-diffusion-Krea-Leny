@@ -8,8 +8,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
-from PyQt5.QtCore import QBuffer, QByteArray, QFile, QUrl
-from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest, QSslError
+from PyQt5.QtCore import QBuffer, QByteArray, QFile, QIODevice, QUrl
+from PyQt5.QtNetwork import (
+    QHttpMultiPart,
+    QHttpPart,
+    QNetworkAccessManager,
+    QNetworkReply,
+    QNetworkRequest,
+    QSslError,
+)
 
 from ..localization import translate as _
 from ..util import client_logger as log
@@ -150,6 +157,17 @@ class RequestManager:
 
     def put(self, url: str, data: QByteArray | bytes):
         return self.http("PUT", url, data)
+
+    def post_multipart(self, url: str, multi: QHttpMultiPart, timeout: float | None = 120.0):
+        """POST a multipart form (e.g. ComfyUI /upload/image). Ownership of `multi` transfers to the reply."""
+        self._cleanup()
+        request = self._prepare_request(url, timeout)
+        reply = self._net.post(request, multi)
+        assert reply is not None, f"Network request for {url} failed: reply is None"
+        multi.setParent(reply)  # keep the multipart alive for the request lifetime
+        future = asyncio.get_running_loop().create_future()
+        self._requests[reply] = Request(url, future)
+        return future
 
     async def upload(self, url: str, data: QByteArray | bytes, sha256: str | None = None):
         self._cleanup()

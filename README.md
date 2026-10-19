@@ -1,15 +1,19 @@
 <h1><img width="64px" src="ai_diffusion/icons/logo-128.png"> Generative AI <i>for Krita</i></h1>
 
-> **LenyZen fork (Krea / Comic / Wan / SeedVR beta)** — based on [Acly/krita-ai-diffusion](https://github.com/Acly/krita-ai-diffusion) **v1.52.1**.  
+> **LenyZen fork (Krea / Randomizer / Comic / Wan / SeedVR beta)** — based on [Acly/krita-ai-diffusion](https://github.com/Acly/krita-ai-diffusion) **v1.52.1**.  
 > Plugin version: **1.52.1-beta.3**  
-> **Beta install + model download links:** see [`INSTALL-BETA.txt`](INSTALL-BETA.txt) · [`CHANGELOG-BETA.txt`](CHANGELOG-BETA.txt)  
+> **Install this fork:** [`INSTALL-BETA.txt`](INSTALL-BETA.txt) · [`CHANGELOG-BETA.txt`](CHANGELOG-BETA.txt) · [Randomizer](docs/src/content/docs/randomizer.mdx)  
 > Build a Krita plugin zip: `powershell -ExecutionPolicy Bypass -File scripts/build-beta-package.ps1`
 
 ### Fork highlights (this repo)
 * **Critical load fix** — apply included `tooling-nodes-api.py` over `comfyui-tooling-nodes/api.py`. Without it, ComfyUI often freezes for minutes (or looks crashed) while scanning models on Windows/slow disks, so Krita never gets results and many users never reach the new workspaces. See `INSTALL-BETA.txt` step 2.
 * **Krea 2** generation, refs, Turbo sampler preset
+* **Randomizer** — roll a prompt from lists, one LoRA from a stack of 25, plus up to 8 LoRAs that stay on every image. Optional Ollama writer. Guide: [`randomizer.mdx`](docs/src/content/docs/randomizer.mdx)
 * **Describe** (Florence-2) + Clio styles / Qwen-VL Enhance
 * **Augment** regional edits
+* **Krea Edit** — identity edit, refs, selection inpaint. Notes: `ai_diffusion/workflows/README_KREA_EDIT.md`
+* **Qwen · Ultra** — image edit workspace. Needs ComfyUI 0.38 or newer for `TextEncodeQwenImage21`. Notes: `ai_diffusion/workflows/README_QWEN_ULTRA.md`
+* **Video · MiniMax H3** — reference-to-video workspace. Needs ComfyUI 0.30 or newer. Notes: `ai_diffusion/workflows/README_MINIMAX_H3.md`
 * **Comic** — multi-panel page layouts, character/scene plates, draft → refine → lock → assemble
 * **SVG / CNC / Laser** — silhouette / line art / limited-color gen, Export SVG or Add Vector Layer
 * **Animate (Wan 2.2)** — T2V / I2V / FLF2V, Extend, Stitch, sampler presets, Video LoRAs, Video Settings… pop-out
@@ -44,8 +48,12 @@ The main goals of this project are:
 ### This fork
 * **Tooling-nodes load fix** (required for a usable install): patched `tooling-nodes-api.py` — see install guide
 * **Krea 2**: Text-to-image / inpaint / LoRAs / reference images + Turbo ER SDE preset
+* **Randomizer**: Chooser lists, a 25-LoRA stack (one picked per Generate), up to 8 always-on LoRAs, named sets, and an Ollama prompt writer
 * **Describe**: Florence-2 captions, Clio styles, Qwen-VL Enhance Description
 * **Augment**: Up to 10 rectangular region edits on a layer
+* **Krea Edit**: Identity edit with refs and selection inpaint
+* **Qwen · Ultra**: Instruction edit workspace (ComfyUI 0.38+ for the 2.1 text encoder)
+* **Video · MiniMax H3**: Reference-to-video workspace (ComfyUI 0.30+)
 * **Comic**: Page layouts, characters/scenes/panel beats, generate, lock panels, assemble full page
 * **SVG / CNC / Laser**: Vector-friendly generation; export SVG or insert a Krita vector layer
 * **Animate (Wan 2.2)**: T2V / I2V / FLF2V, Extend, Stitch, Video LoRAs, sampler presets, Video Settings… pop-out
@@ -93,7 +101,7 @@ insufficient memory!
 ### Installation
 
 1. If you haven't yet, go and install [Krita](https://krita.org/)! _Required version: 5.2.0 or newer_
-1. [Download the plugin](https://github.com/Acly/krita-ai-diffusion/releases/latest).
+1. Install **this** fork, not the upstream release. Follow [`INSTALL-BETA.txt`](INSTALL-BETA.txt), or build a zip with `scripts/build-beta-package.ps1`.
 2. Start Krita and install the plugin via Tools ▸ Scripts ▸ Import Python Plugin from File...
     * Point it to the ZIP archive you downloaded in the previous step.
     * Check [Krita's official documentation](https://docs.krita.org/en/user_manual/python_scripting/install_custom_python_plugin.html) for more options.

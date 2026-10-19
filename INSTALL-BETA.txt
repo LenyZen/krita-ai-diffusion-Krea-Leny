@@ -5,7 +5,7 @@
 
 Plugin version: 1.52.1-beta.3
 Based on: Acly/krita-ai-diffusion v1.52.1
-Date: 2026-07-25
+Date: 2026-10-19
 
 This is a modified Krita AI Diffusion plugin for beta testing. Please
 report bugs, confusing UI, and missing docs — thank you!
@@ -19,6 +19,9 @@ report bugs, confusing UI, and missing docs — thank you!
     slow disks, so Krita hangs or never receives results. Apply it
     before testing other features (see STEP 2).
   * Krea 2 image model support (T2I, inpaint, LoRAs, up to 4 refs)
+  * Randomizer workspace — Chooser lists, one LoRA from a stack of 25,
+    up to 8 LoRAs that apply on every image, named prompt and LoRA sets,
+    and an Ollama prompt writer (free idea, with or without the dropdowns)
   * Describe workspace — Florence-2 captions + Clio style library
     and Qwen-VL "Enhance Description" (image-grounded rewrite)
   * Augment workspace — up to 10 rectangular region edits
@@ -31,6 +34,10 @@ report bugs, confusing UI, and missing docs — thank you!
     and a Video Settings… pop-out (presets / models / sampler / LoRAs)
   * SeedVR Enhance workspace — SeedVR2 diffusion upscale (separate
     from the existing ESRGAN Upscale tab)
+  * Krea Edit workspace — Identity Edit instruction edits with Refs
+    (Subject + Face/Hair/Clothing/Pose role sheets, auto-collaged),
+    selection Inpaint (Crop&Stitch), Advanced Sliders (full-canvas
+    recommended), and Edit-field starter presets
   * "Krea 2 Turbo - ER SDE" sampler preset
   * Progress/result reliability fixes for slow model loads
   * Windows UTF-8 env for managed ComfyUI (avoids SeedVR emoji crash)
@@ -44,6 +51,8 @@ report bugs, confusing UI, and missing docs — thank you!
   tooling-nodes-api.py       - patched tooling-nodes api.py
   INSTALL-BETA.txt           - this file
   CHANGELOG-BETA.txt         - short change list for testers
+  AGENT-INSTALL.md           - install handoff for a coding agent on a
+                               new machine (architecture, paths, nodes)
 
 ---------------------------------------------------------------------
  REQUIREMENTS
@@ -137,6 +146,23 @@ For SeedVR Enhance:
   ensure PYTHONUTF8=1 (this beta sets it for managed servers) and/or
   pin transformers to 4.x:  pip install "transformers>=4.46,<5"
 
+For Krea Edit (Identity Edit + selection Inpaint):
+
+  git clone https://github.com/lbouaraba/comfyui-krea2edit.git
+  git clone https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch.git
+  # Optional — RTX 5080/5090 only if xformers crashes Identity Edit:
+  # git clone https://github.com/lonecatone23/comfyUI-BlackwellAttentionFix.git
+
+  Identity Edit LoRA → models\loras\Krea2\  (or models\loras\)
+    Repo: https://huggingface.co/conradlocke/krea2-identity-edit
+    File: krea2_identity_edit_v1_2.safetensors
+    (use the v1.2 weights from that repo’s Files tab)
+
+  Also needs the same Krea 2 UNET + TE + VAE as Generate (see STEP 3).
+  Slider LoRAs (optional): create models\loras\krea\sliders\ and drop files there.
+  Docs: ai_diffusion\workflows\README_KREA_EDIT.md
+  Reference workflow: https://civitai.com/models/2769318/krea2-inpaintandedit
+
 Comic and SVG / CNC use your normal Generate style (Krea 2 recommended).
 No extra custom nodes required for those two workspaces.
 
@@ -173,6 +199,19 @@ Put each file in the folder shown relative to your ComfyUI root.
 
   → models\vae\
     https://huggingface.co/Comfy-Org/Krea-2/resolve/main/vae/qwen_image_vae.safetensors
+
+--- Krea Edit (Identity Edit LoRA + optional sliders) ---
+  Nodes:
+    https://github.com/lbouaraba/comfyui-krea2edit
+    https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch
+  LoRA repo: https://huggingface.co/conradlocke/krea2-identity-edit
+    → models\loras\Krea2\krea2_identity_edit_v1_2.safetensors
+  Same Krea 2 UNET / TE / VAE as above (Turbo or RAW).
+  Optional slider LoRAs → models\loras\krea\sliders\
+  Reference Comfy workflow:
+    https://civitai.com/models/2769318/krea2-inpaintandedit
+  Optional RTX 50xx attention fix (only if xformers crashes Edit):
+    https://github.com/lonecatone23/comfyUI-BlackwellAttentionFix
 
 --- Florence-2 (Describe captions) ---
   Download the whole repo folder:
@@ -305,6 +344,46 @@ Animate (Wan)
 SeedVR Enhance
   Separate from Upscale (ESRGAN). Pick preset, target size, Enhance.
   Needs SeedVR2 nodes; first run may download weights.
+
+Krea Edit
+  Workspace → Krea Edit. Write Character / Scene / Lighting / Other on Edit
+  (each has a “Pick a starting point…” dropdown with example prompts).
+  Refs tab: Subject photo and/or Face / Hair / Clothing / Pose sheet layers.
+  Role sheets are auto-collaged into one secondary ref (Identity Edit max = 2
+  images). Full Ref sheet still works if you prefer one handmade collage.
+  Selection = local Inpaint Edit (crop 1024 → Identity Edit → soft stitch);
+  no selection = full-canvas edit.
+  Advanced → Sliders: FULL CANVAS ONLY for reliable results. With a marquee
+  + active sliders, the plugin forces full-canvas Edit (status line explains).
+  Deselect (or zero slider bars) when you need true local Inpaint.
+  Folder: ComfyUI/models/loras/krea/sliders/
+  Nodes: https://github.com/lbouaraba/comfyui-krea2edit
+         https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch
+  LoRA:  https://huggingface.co/conradlocke/krea2-identity-edit
+  Docs:  workflows/README_KREA_EDIT.md
+
+Randomizer
+  Workspace → Randomizer, under Generate.
+  The Chooser holds seven comma-separated lists. Generate uses one item
+  from each list that has text.
+  Add LoRAs to the stack holds up to 25. Each Generate picks one.
+  Always apply these LoRAs holds up to 8 and adds all of them every time.
+  Save and Load on each row store named sets. Prompt sets and LoRA sets
+  are separate. They are saved in %APPDATA%\krita\ai_diffusion\ and are
+  not inside the plugin folder.
+  The box above Generate can be resized, scrolled, and copied.
+  History → three dots → Show source shows the prompt and the LoRAs.
+  Write prompt needs Ollama at http://127.0.0.1:11434.
+  Include dropdown themes sends the free idea plus the seven dropdowns.
+  Uncheck it to send only the free idea.
+  Use this prompt turns on Use written prompt. The LoRA roll still happens.
+  Guide: ai_diffusion\workflows\README_RANDOMIZER.md
+  Docs site: docs\src\content\docs\randomizer.mdx
+
+Qwen · Ultra and Video · MiniMax H3 are in the workspace menu.
+  Qwen · Ultra wants ComfyUI 0.38 or newer for TextEncodeQwenImage21.
+  MiniMax H3 wants ComfyUI 0.30 or newer.
+  Notes: workflows\README_QWEN_ULTRA.md and workflows\README_MINIMAX_H3.md
 
 ---------------------------------------------------------------------
  FEEDBACK FOR BETA

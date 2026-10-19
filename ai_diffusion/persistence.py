@@ -156,6 +156,10 @@ class ModelSync:
         state["comic"] = _serialize_comic(model.comic)
         state["animate"] = _serialize_animate(model.animate)
         state["seedvr"] = _serialize(model.seedvr)
+        state["krea_edit"] = _serialize_krea_edit(model.krea_edit)
+        state["minimax_h3"] = _serialize_minimax_h3(model.minimax_h3)
+        state["qwen_ultra"] = _serialize_qwen_ultra(model.qwen_ultra)
+        state["randomizer"] = _serialize(model.randomizer)
         state["custom"] = _serialize_custom(model.custom)
         state["history"] = [asdict(h) for h in self._history]
         state["root"] = _serialize(model.regions)
@@ -183,6 +187,10 @@ class ModelSync:
         _deserialize_comic(model.comic, state.get("comic", {}))
         _deserialize_animate(model.animate, state.get("animate", {}))
         _deserialize(model.seedvr, state.get("seedvr", {}))
+        _deserialize_krea_edit(model.krea_edit, state.get("krea_edit", {}))
+        _deserialize_minimax_h3(model.minimax_h3, state.get("minimax_h3", {}))
+        _deserialize_qwen_ultra(model.qwen_ultra, state.get("qwen_ultra", {}))
+        _deserialize(model.randomizer, state.get("randomizer", {}))
         _deserialize_custom(model.custom, state.get("custom", {}), model.name)
         _deserialize(model.regions, state.get("root", {}))
         _deserialize(model.edit_regions, state.get("edit", {}))
@@ -218,6 +226,10 @@ class ModelSync:
         model.comic.modified.connect(self._save_later)
         model.animate.modified.connect(self._save_later)
         model.seedvr.modified.connect(self._save_later)
+        model.krea_edit.modified.connect(self._save_later)
+        model.minimax_h3.modified.connect(self._save_later)
+        model.qwen_ultra.modified.connect(self._save_later)
+        model.randomizer.modified.connect(self._save_later)
         model.custom.modified.connect(self._save_later)
         model.jobs.job_finished.connect(self._save_results)
         model.jobs.job_discarded.connect(self._remove_results)
@@ -368,6 +380,49 @@ def _deserialize_animate(animate, data: dict[str, Any]):
     _deserialize(animate, data)
     if loras is not None:
         animate.load_loras(loras)
+
+
+def _serialize_minimax_h3(h3):
+    result = _serialize(h3)
+    result["loras"] = [l.to_dict() for l in h3.loras]
+    return result
+
+
+def _deserialize_minimax_h3(h3, data: dict[str, Any]):
+    loras = data.pop("loras", None)
+    _deserialize(h3, data)
+    if loras is not None:
+        h3.load_loras(loras)
+
+
+def _serialize_qwen_ultra(qwen):
+    result = _serialize(qwen)
+    result["loras"] = [l.to_dict() for l in qwen.loras]
+    return result
+
+
+def _deserialize_qwen_ultra(qwen, data: dict[str, Any]):
+    loras = data.pop("loras", None)
+    _deserialize(qwen, data)
+    if loras is not None:
+        qwen.load_loras(loras)
+
+
+def _serialize_krea_edit(krea_edit):
+    result = _serialize(krea_edit)
+    result["loras"] = [l.to_dict() for l in krea_edit.loras]
+    result["sliders"] = [l.to_dict() for l in krea_edit.sliders]
+    return result
+
+
+def _deserialize_krea_edit(krea_edit, data: dict[str, Any]):
+    loras = data.pop("loras", None)
+    sliders = data.pop("sliders", None)
+    _deserialize(krea_edit, data)
+    if loras is not None:
+        krea_edit.load_loras(loras)
+    if sliders is not None:
+        krea_edit.load_sliders(sliders)
 
 
 def _serialize_comic(comic):

@@ -66,7 +66,7 @@ class Localization:
         settings_path = settings_path or user_data_dir / "settings.json"
         if settings_path.exists():
             try:
-                with settings_path.open(encoding="utf-8") as f:
+                with settings_path.open(encoding="utf-8-sig") as f:
                     settings = json.load(f)
                     language = settings.get("language", "en")
             except Exception as e:

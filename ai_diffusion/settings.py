@@ -172,7 +172,7 @@ class Settings(QObject):
 
     auto_update: bool
     _auto_update = Setting(
-        _("Enable Automatic Updates"), True, _("Check for new versions of the plugin on startup")
+        _("Enable Automatic Updates"), False, _("Check for new versions of the plugin on startup")
     )
 
     server_mode: ServerMode

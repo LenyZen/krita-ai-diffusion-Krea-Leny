@@ -1027,6 +1027,10 @@ class WorkspaceSelectWidget(QToolButton):
         Workspace.comic: theme.icon("workspace-comic"),
         Workspace.animate: theme.icon("workspace-animate"),
         Workspace.seedvr: theme.icon("workspace-seedvr"),
+        Workspace.krea_edit: theme.icon("workspace-krea-edit"),
+        Workspace.minimax_h3: theme.icon("workspace-minimax-h3"),
+        Workspace.qwen_ultra: theme.icon("workspace-qwen-ultra"),
+        Workspace.randomizer: theme.icon("workspace-randomizer"),
     }
 
     _value = Workspace.generation
@@ -1036,6 +1040,8 @@ class WorkspaceSelectWidget(QToolButton):
 
         menu = QMenu(self)
         menu.addAction(self._create_action(_("Generate"), Workspace.generation))
+        menu.addAction(self._create_action(_("Randomizer"), Workspace.randomizer))
+        menu.addAction(self._create_action(_("Qwen · Ultra"), Workspace.qwen_ultra))
         menu.addAction(self._create_action(_("Upscale"), Workspace.upscaling))
         menu.addAction(self._create_action(_("Live"), Workspace.live))
         menu.addAction(self._create_action(_("Animation"), Workspace.animation))
@@ -1045,7 +1051,9 @@ class WorkspaceSelectWidget(QToolButton):
         menu.addAction(self._create_action(_("SVG / CNC / Laser"), Workspace.vector_cnc))
         menu.addAction(self._create_action(_("Comic"), Workspace.comic))
         menu.addAction(self._create_action(_("Animate (Wan)"), Workspace.animate))
+        menu.addAction(self._create_action(_("Video · MiniMax H3"), Workspace.minimax_h3))
         menu.addAction(self._create_action(_("SeedVR Enhance"), Workspace.seedvr))
+        menu.addAction(self._create_action(_("Krea Edit"), Workspace.krea_edit))
 
         self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.setMenu(menu)
